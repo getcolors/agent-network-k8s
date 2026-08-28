@@ -173,10 +173,18 @@ fi
 # leaves an orphan the next run closes rather than an undiscoverable live
 # token. The value travels a pipe-only path into the Secret.
 
-if ! kubectl -n "$GW" get secret proxy-token >/dev/null 2>&1; then
+admin() { kubectl -n "$GW" exec netbird-server-0 -- \
+  /go/bin/netbird-server admin "$@" --config /etc/netbird/config.yaml; }
+proxy_token_healthy() {
+  # Healthy = the Secret exists AND the server still lists an unrevoked
+  # colors-proxy token. A Secret whose token was revoked server-side would
+  # leave the proxy permanently unable to register while looking fine.
+  kubectl -n "$GW" get secret proxy-token >/dev/null 2>&1 \
+    && admin token list 2>/dev/null \
+       | awk '$2=="colors-proxy" && $NF=="no"' | grep -q .
+}
+if ! proxy_token_healthy; then
   log "minting the proxy access token"
-  admin() { kubectl -n "$GW" exec netbird-server-0 -- \
-    /go/bin/netbird-server admin "$@" --config /etc/netbird/config.yaml; }
   for id in $(admin token list 2>/dev/null \
               | awk '$2=="colors-proxy" && $NF=="no" {print $1}'); do
     admin token revoke "$id" >/dev/null 2>&1 || true
@@ -185,8 +193,13 @@ if ! kubectl -n "$GW" get secret proxy-token >/dev/null 2>&1; then
           | grep '^Token:' | awk '{print $2}')
   [[ -n $token ]] || { log "FATAL: no proxy token minted"; exit 1; }
   printf '%s' "$token" \
-    | kubectl -n "$GW" create secret generic proxy-token --from-file=token=/dev/stdin >/dev/null
+    | kubectl -n "$GW" create secret generic proxy-token --from-file=token=/dev/stdin \
+        --dry-run=client -o yaml 2>/dev/null \
+    | kubectl apply -f - >/dev/null \
+    || { printf '%s' "$token" \
+         | kubectl -n "$GW" create secret generic proxy-token --from-file=token=/dev/stdin >/dev/null; }
   unset token
+  kubectl -n "$GW" rollout restart deployment/reverse-proxy 2>/dev/null || true
 fi
 
 # --- the reverse proxy (applied, not awaited) --------------------------------
@@ -204,7 +217,7 @@ apply "$tmpdir/proxy.yaml"
 
 ( cd "$DIR/agent-image" && tar --sort=name --mtime=@0 --owner=0 --group=0 -czf "$tmpdir/context.tgz" . )
 ctx_sha=$(sha256sum "$tmpdir/context.tgz" | awk '{print $1}')
-ctx8=${ctx_sha:0:8}
+ctx8=${ctx_sha:0:16}
 image_dest="$REGISTRY_URN/agent:ctx-$ctx8"
 
 manifest_digest() {

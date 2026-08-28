@@ -20,7 +20,8 @@ GW=agent-network-gateway
 AG=agent-network-agent
 umask 077
 
-if [[ -d /dev/shm ]]; then KEY_FILE=/dev/shm/agent-network-k8s-setup-key
+PROFILE=$(basename "$(dirname "$STATE")")
+if [[ -d /dev/shm ]]; then KEY_FILE="/dev/shm/agent-network-k8s-$PROFILE-setup-key"
 else KEY_FILE="$STATE/setup-key"; fi
 
 log() { echo "agent-network-k8s-agent: $*" >&2; }
@@ -73,6 +74,37 @@ kubectl -n "$AG" create configmap socks-entry \
 known_proxy=$(cat "$STATE/proxy-overlay-ip" 2>/dev/null || echo "127.0.0.1")
 render_client "$known_proxy" > "$tmpdir/netbird-client.yaml"
 apply "$tmpdir/netbird-client.yaml"
+
+# Lost-state recovery: a fresh state volume beneath a surviving peer record
+# is an identity that is gone for good — bootstrap counts the record as
+# enrolled and refuses to mint, while the pod waits for a key that will
+# never come. Detect the combination, remove the stale record by id, and
+# re-run bootstrap so a fresh one-off key is staged.
+if [[ ! -s $KEY_FILE ]]; then
+  status=""
+  for _ in $(seq 1 24); do
+    status=$(kubectl -n "$AG" exec deploy/netbird-client -- netbird status 2>&1 || true)
+    [[ -n $status ]] && break
+    sleep 5
+  done
+  if grep -qiE 'NeedsLogin|not logged in' <<<"$status"; then
+    # Confirmed twice with a settling delay: a healthy pod passes through
+    # login states only transiently, and this path deletes a peer record.
+    sleep 30
+    status=$(kubectl -n "$AG" exec deploy/netbird-client -- netbird status 2>&1 || true)
+  fi
+  if grep -qiE 'NeedsLogin|not logged in' <<<"$status"; then
+    log "the client lost its enrolled state while a peer record remains; recovering"
+    gid=$(api GET /groups | jq -r '.[] | select(.name=="agents") | .id' | head -1)
+    for pid in $(api GET /peers | jq -r --arg g "$gid" \
+                   '.[] | select((.groups // []) | any(.id==$g)) | .id'); do
+      log "removing stale peer $pid"
+      api DELETE "/peers/$pid" >/dev/null 2>&1 || true
+    done
+    rm -f "$STATE/agent-peer-id"
+    bash "$DIR/bootstrap.sh"
+  fi
+fi
 
 # First enrollment: the pod's entrypoint waits (bounded) for the key the
 # bootstrap staged; stream it over exec stdin into the memory-backed volume.

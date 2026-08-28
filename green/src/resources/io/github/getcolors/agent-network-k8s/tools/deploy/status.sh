@@ -15,9 +15,13 @@ kubectl get pods -n "$GW" -o wide 2>/dev/null
 kubectl get pods -n "$AG" -o wide 2>/dev/null
 
 echo; echo "== certificate"
-exp=$(echo | openssl s_client -servername "$HOST" -connect "$HOST:443" 2>/dev/null \
-      | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+cert=$(echo | openssl s_client -servername "$HOST" -connect "$HOST:443" 2>/dev/null \
+       | openssl x509 2>/dev/null)
+exp=$(openssl x509 -noout -enddate 2>/dev/null <<<"$cert" | cut -d= -f2)
 echo "$HOST expires ${exp:-unknown}"
+if [[ -n $cert ]] && ! openssl x509 -noout -checkend 2592000 <<<"$cert" >/dev/null 2>&1; then
+  echo "  WARNING: under 30 days remain — run ./green create to renew"
+fi
 
 echo; echo "== endpoint"
 ep=$(cat "$STATE/endpoint" 2>/dev/null)

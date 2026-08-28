@@ -130,6 +130,33 @@ gate_isolation() {
       exit 1
     fi
   done
+  # Hostname-form CONNECTs — the primary bridge's actual escape surface:
+  # remote resolution at the listener must serve the endpoint mapping and
+  # nothing else (public names have no resolver there: the pod's DNS egress
+  # is denied and netstack dials only the overlay).
+  socks_host_code() {
+    local out
+    out=$(in_agent env -u HTTPS_PROXY -u HTTP_PROXY \
+      curl -sk -o /dev/null -w '%{http_code}' --max-time 15 \
+      --socks5-hostname "$SOCKS_IP:1080" "$1" 2>/dev/null || true)
+    echo "${out:-000}"
+  }
+  for url in "https://example.com/" "https://api.anthropic.com/"; do
+    code=$(socks_host_code "$url")
+    if [[ $code != 000 ]]; then
+      log "FAIL: the SOCKS5 listener resolved and proxied $url (HTTP $code)"
+      exit 1
+    fi
+  done
+  # Overlay-adjacent guesses: the mapping admits one address, not a subnet.
+  base=${PROXY_OVERLAY_IP%.*}; last=${PROXY_OVERLAY_IP##*.}
+  for adj in "$base.$(( (last + 1) % 256 ))" "$base.$(( (last + 254) % 256 ))"; do
+    code=$(socks_code "https://$adj/")
+    if [[ $code != 000 ]]; then
+      log "FAIL: the SOCKS5 listener reached overlay-adjacent $adj (HTTP $code)"
+      exit 1
+    fi
+  done
   code=$(socks_code "https://$PROXY_OVERLAY_IP/")
   if [[ $code == 000 ]]; then
     log "FAIL: the overlay address is not reachable through SOCKS5; the denials above are breakage"
@@ -383,8 +410,15 @@ if [[ $live_keys != 0 ]]; then
   log "FAIL: $live_keys unrevoked colors-agent setup keys exist"
   exit 1
 fi
-if [[ -d /dev/shm && -e /dev/shm/agent-network-k8s-setup-key ]]; then
+profile=$(basename "$(dirname "$STATE")")
+if [[ -d /dev/shm && -e "/dev/shm/agent-network-k8s-$profile-setup-key" ]]; then
   log "FAIL: the staged setup key file survived post-enroll"
+  exit 1
+fi
+# The key must never have become a Kubernetes Secret — asserted by name
+# across every namespace, not assumed from the code path.
+if kubectl get secrets -A -o name 2>/dev/null | grep -qi 'setup'; then
+  log "FAIL: a Secret with a setup-key-shaped name exists in the cluster"
   exit 1
 fi
 
@@ -394,5 +428,16 @@ if [[ ! -f $STATE/disrupt-tested ]]; then
   bash "$DIR/disrupt.sh"
   touch "$STATE/disrupt-tested"
 fi
+
+# Ephemeral converge diagnostics (never the durable record — that is the
+# command output): what passed, when, against which cluster and endpoint.
+{
+  echo "passed-at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "cluster: $(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null)"
+  echo "endpoint: $ENDPOINT"
+  echo "bridge-mode: $MODE"
+  echo "proxy-overlay: $PROXY_OVERLAY_IP"
+  echo "gates: isolation-outer isolation-inner tunnel keyless denial-guardrail denial-routing payload external-403 attribution limits hygiene disruption"
+} > "$STATE/proofs-summary"
 
 log "PASS: isolation (outer and inner), tunnel, keyless path, both denials, payload, external denial, attribution, limits, hygiene"

@@ -40,8 +40,11 @@ umask 077
 mkdir -p "$STATE"
 
 # The setup key's staging file: memory-backed where the OS offers it, never
-# argv, never a Kubernetes Secret (etcd would keep a durable copy).
-if [[ -d /dev/shm ]]; then KEY_FILE=/dev/shm/agent-network-k8s-setup-key
+# argv, never a Kubernetes Secret (etcd would keep a durable copy) — and
+# profile-scoped, so two deployments on one workstation cannot consume or
+# revoke each other's credential.
+PROFILE=$(basename "$(dirname "$STATE")")
+if [[ -d /dev/shm ]]; then KEY_FILE="/dev/shm/agent-network-k8s-$PROFILE-setup-key"
 else KEY_FILE="$STATE/setup-key"; fi
 
 log() { echo "agent-network-k8s-bootstrap: $*" >&2; }

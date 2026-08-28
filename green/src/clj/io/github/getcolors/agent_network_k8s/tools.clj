@@ -60,7 +60,14 @@
       (java.nio.file.Files/setPosixFilePermissions
        p (java.util.Set/of java.nio.file.attribute.PosixFilePermission/OWNER_READ
                            java.nio.file.attribute.PosixFilePermission/OWNER_WRITE)))
-    (.renameTo tmp f)))
+    (when-not (.renameTo tmp f)
+      (throw (ex-info (str "could not atomically install " path) {:path path})))))
+
+(defn sh-quote
+  "Single-quote a value for a sourced shell file: a generated credential is
+  data, never syntax."
+  [s]
+  (str "'" (str/replace (str s) "'" "'\\''") "'"))
 
 ;; ---------------------------------------------------------------- compute
 
@@ -106,9 +113,9 @@
         pass (str (output-value result :registry-password))]
     (when (and (not-empty urn) (not-empty user))
       (write-private! (registry-env-path opts)
-                      (str "REGISTRY_URN=" urn "\n"
-                           "REGISTRY_USER=" user "\n"
-                           "REGISTRY_PASS=" pass "\n")))))
+                      (str "REGISTRY_URN=" (sh-quote urn) "\n"
+                           "REGISTRY_USER=" (sh-quote user) "\n"
+                           "REGISTRY_PASS=" (sh-quote pass) "\n")))))
 
 (defn infrastructure-step [opts]
   (let [dir (tool-dir opts infrastructure-tool)
@@ -252,11 +259,25 @@
      (raw-spec (str dir "/desired.json") (desired-json data))
      (raw-spec (str dir "/inventory.json") (inventory data)))))
 
+(defn kubeconfig-error
+  "Why the profile's kubeconfig must not be used, or nil: a bearer credential
+  owned by someone else is not this deployment's to wield."
+  [opts]
+  (let [f (io/file (kubeconfig-path opts))]
+    (when (.exists f)
+      (let [owner (str (java.nio.file.Files/getOwner
+                        (.toPath f) (make-array java.nio.file.LinkOption 0)))
+            me (System/getProperty "user.name")]
+        (when-not (= owner me)
+          (str "kubeconfig at " f " is owned by " owner ", not " me))))))
+
 (defn run-script
   "Run one rendered deploy script with the caller's terminal attached. The
   scripts read run facts from their environment (paths only — secrets stay in
   the inherited COLORS_PAR_* variables and private state files, never argv)."
   [opts script & args]
+  (when-let [err (kubeconfig-error opts)]
+    (throw (ex-info err {:script script})))
   (let [dir (tool-dir opts deploy-tool)
         argv (-> ["env"
                   (str "KUBECONFIG=" (kubeconfig-path opts))
