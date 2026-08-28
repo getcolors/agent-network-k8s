@@ -1,0 +1,69 @@
+# Management + Signal + Relay + STUN in one process, its datastore on a CSI
+# volume. The configuration Secret is rendered by converge.sh from the
+# create-once cluster secrets; a changed config restarts the server via
+# rollout, an unchanged one restarts nothing.
+#
+# Readiness is the OIDC discovery document on the plain HTTP port: the image
+# carries no HTTP client, so in-container probes would fail closed — but the
+# kubelet probes from outside the container, which is exactly the vantage
+# the parent package had to build by hand.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: netbird-server
+  namespace: agent-network-gateway
+  labels: {app: netbird-server}
+spec:
+  serviceName: netbird-server
+  replicas: 1
+  selector:
+    matchLabels: {app: netbird-server}
+  template:
+    metadata:
+      labels: {app: netbird-server}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: netbird-server
+          image: netbirdio/netbird-server:0.77.1@sha256:e71f39cefcd90956d818dc4179084fd47d39f0741d1211b818ec640766b5794d
+          args: ["--config", "/etc/netbird/config.yaml"]
+          env:
+            # Enables `POST /api/setup` to mint a one-time PAT, which is the
+            # only supported way to bootstrap the first owner headlessly.
+            - {name: NB_SETUP_PAT_ENABLED, value: "true"}
+          ports:
+            - {name: http, containerPort: 80}
+            - {name: stun, containerPort: 3478, protocol: UDP}
+          readinessProbe:
+            httpGet:
+              path: /oauth2/.well-known/openid-configuration
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 60
+          volumeMounts:
+            - {name: config, mountPath: /etc/netbird, readOnly: true}
+            - {name: data, mountPath: /var/lib/netbird}
+      volumes:
+        - name: config
+          secret: {secretName: netbird-server-config}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: {storage: 10Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: netbird-server
+  namespace: agent-network-gateway
+  labels: {app: netbird-server}
+spec:
+  type: ClusterIP
+  selector: {app: netbird-server}
+  ports:
+    - {name: http, port: 80, targetPort: 80, protocol: TCP}
+    - {name: stun, port: 3478, targetPort: 3478, protocol: UDP}

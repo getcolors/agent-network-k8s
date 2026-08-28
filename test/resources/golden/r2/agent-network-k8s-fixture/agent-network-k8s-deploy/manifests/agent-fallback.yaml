@@ -1,0 +1,74 @@
+# The isolated agent, fallback bridge mode — selected by agent.sh when the
+# pinned NetBird SOCKS5 listener will not serve hostname CONNECTs. A gost
+# forwarder listens on localhost:8443 and dials the reverse proxy's overlay
+# address through SOCKS5; the endpoint hostname maps to 127.0.0.1, so Claude
+# Code's TLS (SNI = the endpoint name) runs end-to-end to the reverse proxy
+# and the bridge moves bytes only. Identity enforcement is identical to
+# primary mode: the connection traverses the WireGuard tunnel either way.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent
+  namespace: agent-network-agent
+  labels: {app: agent, bridge-mode: fallback}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: agent}
+  template:
+    metadata:
+      labels: {app: agent, bridge-mode: fallback}
+    spec:
+      automountServiceAccountToken: false
+      hostAliases:
+        - ip: "127.0.0.1"
+          hostnames: ["__ENDPOINT__"]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      imagePullSecrets:
+        - {name: registry-pull}
+      containers:
+        - name: claude
+          image: "__AGENT_IMAGE__"
+          command: ["sleep", "infinity"]
+          env:
+            - {name: ANTHROPIC_BASE_URL, value: "https://__ENDPOINT__:8443"}
+            - {name: ANTHROPIC_API_KEY, value: "none"}
+            - {name: ANTHROPIC_MODEL, value: "claude-haiku-4-5-20251001"}
+            - {name: ANTHROPIC_SMALL_FAST_MODEL, value: "claude-haiku-4-5-20251001"}
+            - {name: ANTHROPIC_DEFAULT_OPUS_MODEL, value: "claude-haiku-4-5-20251001"}
+            - {name: ANTHROPIC_DEFAULT_SONNET_MODEL, value: "claude-haiku-4-5-20251001"}
+            - {name: ANTHROPIC_DEFAULT_HAIKU_MODEL, value: "claude-haiku-4-5-20251001"}
+            - {name: CLAUDE_CODE_SUBAGENT_MODEL, value: "claude-haiku-4-5-20251001"}
+            - {name: DISABLE_TELEMETRY, value: "1"}
+            - {name: DISABLE_ERROR_REPORTING, value: "1"}
+            - {name: DISABLE_AUTOUPDATER, value: "1"}
+            - {name: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, value: "1"}
+            - {name: HOME, value: "/home/agent"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: home, mountPath: /home/agent}
+            - {name: tmp, mountPath: /tmp}
+        - name: bridge
+          image: "__AGENT_IMAGE__"
+          command: ["/usr/local/bin/bridge-entry.sh", "fallback"]
+          env:
+            - {name: SOCKS_ADDR, value: "__SOCKS_IP__:1080"}
+            - {name: PROXY_OVERLAY_IP, value: "__PROXY_OVERLAY_IP__"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: bridge-run, mountPath: /run/bridge}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: home, emptyDir: {}}
+        - {name: tmp, emptyDir: {}}
+        - {name: bridge-run, emptyDir: {}}

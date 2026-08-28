@@ -1,0 +1,5 @@
+{
+  "host" : "agent-network-k8s.example.com",
+  "profile" : "agent-network-k8s-fixture",
+  "compute_name" : "agent-network-k8s-fixture"
+}

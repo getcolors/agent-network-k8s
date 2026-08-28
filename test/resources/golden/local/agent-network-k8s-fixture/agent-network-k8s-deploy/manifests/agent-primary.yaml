@@ -1,0 +1,82 @@
+# The isolated agent, primary bridge mode: headless Claude Code plus a
+# localhost privoxy that converts its HTTP CONNECT into SOCKS5 with the
+# hostname passed through — the NetBird pod resolves the endpoint name via
+# its own hostAliases (netstack mode has no NetBird DNS). Claude Code cannot
+# speak SOCKS5 itself; it even crashes when the proxy variables point at a
+# socks URL, which is why the bridge exists at all.
+#
+# The pod holds no API key, no ServiceAccount token, and no DNS: privoxy's
+# upstream is the SOCKS Service's ClusterIP, substituted at converge, so
+# nothing here ever resolves a name. Its only network egress — enforced by
+# the NetworkPolicy, probed by acceptance — is the SOCKS5 pod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent
+  namespace: agent-network-agent
+  labels: {app: agent, bridge-mode: primary}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: agent}
+  template:
+    metadata:
+      labels: {app: agent, bridge-mode: primary}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      imagePullSecrets:
+        - {name: registry-pull}
+      containers:
+        - name: claude
+          image: "__AGENT_IMAGE__"
+          command: ["sleep", "infinity"]
+          env:
+            - {name: ANTHROPIC_BASE_URL, value: "https://__ENDPOINT__"}
+            # A placeholder the proxy strips; the real key lives server-side
+            # in NetBird's encrypted store and is injected after identity
+            # and policy checks.
+            - {name: ANTHROPIC_API_KEY, value: "none"}
+            - {name: HTTPS_PROXY, value: "http://127.0.0.1:8118"}
+            - {name: HTTP_PROXY, value: "http://127.0.0.1:8118"}
+            # Every model knob pinned to the allowlisted model: one unpinned
+            # tier would let Claude Code name a model the guardrail rejects
+            # and the happy path would die on its own policy.
+            - {name: ANTHROPIC_MODEL, value: "claude-haiku-4-5-20251001"}
+            - {name: ANTHROPIC_SMALL_FAST_MODEL, value: "claude-haiku-4-5-20251001"}
+            - {name: ANTHROPIC_DEFAULT_OPUS_MODEL, value: "claude-haiku-4-5-20251001"}
+            - {name: ANTHROPIC_DEFAULT_SONNET_MODEL, value: "claude-haiku-4-5-20251001"}
+            - {name: ANTHROPIC_DEFAULT_HAIKU_MODEL, value: "claude-haiku-4-5-20251001"}
+            - {name: CLAUDE_CODE_SUBAGENT_MODEL, value: "claude-haiku-4-5-20251001"}
+            - {name: DISABLE_TELEMETRY, value: "1"}
+            - {name: DISABLE_ERROR_REPORTING, value: "1"}
+            - {name: DISABLE_AUTOUPDATER, value: "1"}
+            - {name: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, value: "1"}
+            - {name: HOME, value: "/home/agent"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: home, mountPath: /home/agent}
+            - {name: tmp, mountPath: /tmp}
+        - name: bridge
+          image: "__AGENT_IMAGE__"
+          command: ["/usr/local/bin/bridge-entry.sh", "primary"]
+          env:
+            - {name: SOCKS_ADDR, value: "__SOCKS_IP__:1080"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: bridge-run, mountPath: /run/bridge}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: home, emptyDir: {}}
+        - {name: tmp, emptyDir: {}}
+        - {name: bridge-run, emptyDir: {}}

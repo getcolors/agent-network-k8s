@@ -1,0 +1,87 @@
+# The edge: Traefik with the file provider only — no CRDs, no cluster
+# discovery, no ServiceAccount. Its whole routing table is the rendered
+# dynamic.yaml ConfigMap, and its TLS store is the wildcard Secret the
+# certificate stage creates (mounted optional, so the pod can start before
+# issuance; the certificate stage restarts it once the Secret exists).
+#
+# Two Services select it. The LoadBalancer carries exactly the public
+# surface — TCP 80/443 — through a Vultr LB in TCP mode; no UDP is ever
+# public. The ClusterIP is the internal face the peers' hostAliases point
+# the base hostname at: 443 for management/signal/relay, and UDP 3478 so
+# the advertised STUN address resolves and routes in-cluster.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traefik
+  namespace: agent-network-gateway
+  labels: {app: traefik}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: traefik}
+  template:
+    metadata:
+      labels: {app: traefik}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: traefik
+          image: <{ agent-network-traefik-image }>
+          args:
+            - "--providers.file.filename=/etc/traefik/dynamic.yaml"
+            - "--providers.file.watch=true"
+            - "--entrypoints.web.address=:80"
+            - "--entrypoints.websecure.address=:443"
+            - "--entrypoints.stun.address=:3478/udp"
+            - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+            - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+            # gRPC passes through Traefik; without these it dies at the
+            # first long-lived management stream.
+            - "--serverstransport.forwardingtimeouts.responseheadertimeout=0s"
+            - "--serverstransport.forwardingtimeouts.idleconntimeout=0s"
+          ports:
+            - {name: web, containerPort: 80}
+            - {name: websecure, containerPort: 443}
+            - {name: stun, containerPort: 3478, protocol: UDP}
+          readinessProbe:
+            tcpSocket: {port: 443}
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          volumeMounts:
+            - {name: dynamic, mountPath: /etc/traefik, readOnly: true}
+            - {name: wildcard, mountPath: /wildcard, readOnly: true}
+      volumes:
+        - name: dynamic
+          configMap: {name: traefik-dynamic}
+        - name: wildcard
+          secret:
+            secretName: wildcard-tls
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik
+  namespace: agent-network-gateway
+  labels: {app: traefik}
+  annotations:
+    service.beta.kubernetes.io/vultr-loadbalancer-protocol: "tcp"
+spec:
+  type: LoadBalancer
+  selector: {app: traefik}
+  ports:
+    - {name: web, port: 80, targetPort: 80, protocol: TCP}
+    - {name: websecure, port: 443, targetPort: 443, protocol: TCP}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik-internal
+  namespace: agent-network-gateway
+  labels: {app: traefik}
+spec:
+  type: ClusterIP
+  selector: {app: traefik}
+  ports:
+    - {name: websecure, port: 443, targetPort: 443, protocol: TCP}
+    - {name: stun, port: 3478, targetPort: 3478, protocol: UDP}

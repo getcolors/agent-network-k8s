@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Provision a NetBird Agent Network demo on Vultr Kubernetes Engine — a keyless, identity-gated LLM endpoint and a two-pod application: a netstack SOCKS5 leg and a network-isolated agent running headless Claude Code.">
+  <title>Agent Network K8s Package Skill — getcolors</title>
+  <style>
+    :root{color-scheme:light;--ink:#1f2328;--muted:#59636e;--line:#d0d7de;--soft:#f6f8fa;--blue:#0969da;--green:#1a7f37;--warn:#9a6700}*{box-sizing:border-box}body{margin:0;color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:920px;margin:auto;padding:64px 28px 100px}h1{font-size:52px;line-height:1.05;margin:0}h2{margin-top:54px;padding-bottom:8px;border-bottom:1px solid var(--line)}h3{margin-top:30px}.lead{font-size:20px;color:var(--muted);max-width:790px}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}pre{padding:18px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--soft)}:not(pre)>code{padding:.12em .35em;border-radius:5px;background:var(--soft)}a{color:var(--blue)}.eyebrow{color:var(--green);font-weight:700;letter-spacing:.08em}.callout{padding:16px 18px;border-left:4px solid var(--green);background:#dafbe1}.warning{border-color:var(--warn);background:#fff8c5}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.card{padding:18px;border:1px solid var(--line);border-radius:8px}.card h3{margin-top:0}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{padding:8px 10px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:var(--soft)}@media(max-width:650px){main{padding-top:38px}.grid{grid-template-columns:1fr}h1{font-size:40px}}
+  </style>
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-4VKP1WY4QJ"></script>
+  <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());gtag('config','G-4VKP1WY4QJ',{page_title:'Agent Network K8s Package Skill — getcolors'});</script>
+<script src="https://rybbit.getcolors.ai/api/script.js" data-site-id="9fb9c41a6d49" defer></script>
+</head>
+<body><main>
+  <p class="eyebrow">GREEN PACKAGE SKILL · VULTR KUBERNETES ENGINE · NETBIRD AGENT NETWORK · CLAUDE CODE</p>
+  <h1>Agent Network K8s Package Skill</h1>
+  <p class="lead">A reproducible Green workflow for a <a href="https://docs.netbird.io/agent-network">NetBird Agent Network</a> demo on managed Kubernetes: a keyless, policy-gated LLM endpoint on a VKE cluster — and a two-pod application whose agent can reach nothing but its SOCKS5 leg.</p>
+
+  <div class="callout"><strong>The isolation is the demo — and it is unprivileged.</strong> The agent pod runs under <code>restricted</code> Pod Security behind a default-deny NetworkPolicy whose single egress rule is the NetBird client pod: a netstack SOCKS5 listener — userspace WireGuard, no TUN device, no capabilities. Its only path to an LLM is the agent-network endpoint over the tunnel, where the request carries the peer's identity, passes the policy, hits the model allowlist and the budget caps, and lands in the access log — with the Anthropic key held server-side, never in the pod. Acceptance probes the boundary from both sides: raw TCP around the proxy, and CONNECT probes through it.</div>
+
+  <h2>Quick start</h2>
+  <pre><code>npx skills add getcolors/agent-network-k8s
+cp .agents/skills/package-agent-network-k8s-green/green ./green
+chmod +x green
+./green build
+./green create --dry-run</code></pre>
+  <p>Build renders reproducible output and dry-run walks the workflow without provider side effects. Real creation and deletion require explicit authorization.</p>
+
+  <h2>Architecture</h2>
+  <div class="grid">
+    <div class="card"><h3>Compute</h3><p>One VKE cluster (managed control plane, one node pool) and a deployment-owned Vultr Container Registry, both named after the profile. No SSH anywhere: every operation goes through the generated kubeconfig.</p></div>
+    <div class="card"><h3>DNS &amp; TLS</h3><p>Two <strong>unproxied</strong> Cloudflare <code>A</code> records at the load balancer: the base name and its wildcard — the endpoint hostname is a label management mints at bootstrap. One lego DNS-01 order carries <strong>both SANs</strong>; Traefik terminates the base name from that pair and hands endpoint subdomains to the private reverse proxy over an SNI passthrough with PROXY protocol v2. Nothing runs per-name ACME — the pinned build's responder is defective, and the package routes around it.</p></div>
+    <div class="card"><h3>Application</h3><p>Two pods. The NetBird client in netstack/SOCKS5 mode enrolls with a one-off key streamed over <code>exec</code> stdin into memory-backed storage (never a Kubernetes Secret) and keeps its identity on a small CSI volume. The agent pod — headless Claude Code plus a localhost HTTP→SOCKS5 bridge — holds no key, no ServiceAccount token, no DNS. The agent image is built in-cluster by kaniko and consumed by digest.</p></div>
+    <div class="card"><h3>Acceptance</h3><p>Isolation probed around <em>and through</em> the SOCKS5 listener, each with a success control; the tunnel up; the keyless call; both denial classes at zero upstream cost; headless Claude Code on the same path; the external pre-identity 403; attribution and limits read back; and a bounded disruption suite — pod deletes, component restarts, a node drain under an uncordon trap — after which the claim is re-probed.</p></div>
+  </div>
+
+  <h2>Fake-key mode</h2>
+  <p>A deliberately fake <code>COLORS_PAR_ANTHROPIC_API_KEY</code> is a supported mode: acceptance then expects Anthropic's own <code>401</code> relayed through the proxy — proving isolation, the tunnel, endpoint routing, policy authorization and server-side key injection with nothing billable. Swap in a real key and re-run <code>create</code> for real completions.</p>
+
+  <h2>Exposure</h2>
+  <table>
+    <tr><th>Surface</th><th>Exposure</th><th>Purpose</th></tr>
+    <tr><td>80 / 443</td><td><code>vultr-http-sources</code>, via the load balancer</td><td>Traefik: dashboard, REST API, gRPC, relay WebSocket, embedded IdP — and the SNI passthrough that hands endpoint TLS to the private reverse proxy</td></tr>
+    <tr><td>STUN 3478/udp</td><td>in-cluster only</td><td>Both peers live on the pod network; ICE connects on direct host candidates with the in-cluster relay as fallback. No UDP is ever public.</td></tr>
+    <tr><td>8443 / 9090 / 9000</td><td>closed</td><td>The proxy's pod port, metrics and healthcheck — asserted refused at the load balancer</td></tr>
+  </table>
+
+  <div class="callout warning"><strong>Disposable by design.</strong> No backups: recovery is a guarded <code>delete</code> followed by <code>create</code>, which regenerates the endpoint hostname and every peer identity. Nothing in the cluster is worth outliving it.</div>
+
+  <h2>Safety</h2>
+  <ul>
+    <li>Credentials are <code>COLORS_PAR_*</code> variables in the gitignored <code>.envrc.private</code> — never in <code>colors.yml</code>.</li>
+    <li>Never export <code>COLORS_PAR_PROFILE</code>; the profile keys remote state.</li>
+    <li><code>.colors/</code> is generated output: never edit or commit it.</li>
+    <li><code>compute-prevent-destroy: true</code> stays committed; destruction takes a one-run override.</li>
+  </ul>
+
+  <h2>Relation to agent-network</h2>
+  <p>The single-node parent (<a href="https://github.com/getcolors/agent-network">agent-network</a>) verified the control-plane contract this package reuses verbatim. This package changes the substrate and the isolation mechanism — Kubernetes NetworkPolicy instead of Docker networks and DOCKER-USER rules, an unprivileged SOCKS5 leg instead of a kernel TUN — not the claim.</p>
+
+  <p><a href="https://github.com/getcolors/agent-network-k8s">Source on GitHub</a></p>
+</main></body>
+</html>

@@ -1,0 +1,95 @@
+# The NetBird reverse proxy, private mode: the peer that serves the keyless
+# agent-network endpoint. Its WireGuard is an embedded userspace netstack —
+# no capabilities, no tun device — and NB_PROXY_PRIVATE=true keeps it serving
+# only agent-network routes to authorized peers over the tunnel.
+#
+# Endpoint TLS comes from the wildcard Secret, never per-name ACME: the
+# pinned 0.77.1 binary's ACME responder is defective (every order dies with
+# "no viable challenge type found" while burning the CA's failed-authorization
+# rate limit; verified against live authz objects in the parent package,
+# 2026-08-26). The Secret mount is required, so the pod stays Pending until
+# the certificate stage has issued the pair — the ordering the plan wants.
+#
+# The pod listener is 8443 (a non-root process cannot bind 443); the Service
+# maps 443 onto it, and both the ingress NetworkPolicy and Traefik's
+# passthrough name the pod port.
+#
+# The token is minted by converge.sh with `netbird-server admin token create`
+# (create-once) and arrives from a cluster Secret; it never enters a rendered
+# file. __TRAEFIK_INTERNAL_IP__ is substituted at converge time: the embedded
+# netbird client derives signal and relay addresses from the management
+# configuration, which names the public hostname — and resolving that from
+# inside the cluster must land on Traefik's internal ClusterIP, not the LB
+# hairpin.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reverse-proxy
+  namespace: agent-network-gateway
+  labels: {app: reverse-proxy}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: reverse-proxy}
+  template:
+    metadata:
+      labels: {app: reverse-proxy}
+    spec:
+      automountServiceAccountToken: false
+      hostAliases:
+        - ip: "__TRAEFIK_INTERNAL_IP__"
+          hostnames: ["agent-network-k8s.example.com"]
+      containers:
+        - name: reverse-proxy
+          image: netbirdio/reverse-proxy:0.77.1@sha256:d3f5815133542c333e7e7166e19989adcce9afb15443a8de5ecbc87ef528c8f0
+          env:
+            - {name: NB_PROXY_DEBUG_LOGS, value: "false"}
+            # Direct to the management Service, insecure gRPC: the hop never
+            # leaves the cluster.
+            - {name: NB_PROXY_MANAGEMENT_ADDRESS, value: "http://netbird-server.agent-network-gateway.svc.cluster.local:80"}
+            - {name: NB_PROXY_ALLOW_INSECURE, value: "true"}
+            # Public cluster address; the endpoint hangs one label beneath it.
+            - {name: NB_PROXY_DOMAIN, value: "agent-network-k8s.example.com"}
+            - {name: NB_PROXY_ADDRESS, value: ":8443"}
+            - name: NB_PROXY_TOKEN
+              valueFrom:
+                secretKeyRef: {name: proxy-token, key: token}
+            - {name: NB_PROXY_CERTIFICATE_DIRECTORY, value: "/wildcard"}
+            - {name: NB_PROXY_CERTIFICATE_FILE, value: "tls.crt"}
+            - {name: NB_PROXY_CERTIFICATE_KEY_FILE, value: "tls.key"}
+            - {name: NB_PROXY_WILDCARD_CERT_DIR, value: "/wildcard"}
+            - {name: NB_PROXY_ACME_CERTIFICATES, value: "false"}
+            - {name: NB_PROXY_FORWARDED_PROTO, value: "https"}
+            # PROXY protocol from Traefik's TCP passthrough preserves client
+            # addresses. The trusted range is the pod network; the ingress
+            # NetworkPolicy on this pod is what narrows the actual sources
+            # to Traefik.
+            - {name: NB_PROXY_PROXY_PROTOCOL, value: "true"}
+            - {name: NB_PROXY_TRUSTED_PROXIES, value: "10.244.0.0/16"}
+            - {name: NB_PROXY_PRIVATE, value: "true"}
+          ports:
+            - {name: tls, containerPort: 8443}
+          readinessProbe:
+            tcpSocket: {port: 8443}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 60
+          volumeMounts:
+            - {name: wildcard, mountPath: /wildcard, readOnly: true}
+      volumes:
+        - name: wildcard
+          secret:
+            secretName: wildcard-tls
+            optional: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reverse-proxy
+  namespace: agent-network-gateway
+  labels: {app: reverse-proxy}
+spec:
+  type: ClusterIP
+  selector: {app: reverse-proxy}
+  ports:
+    - {name: tls, port: 443, targetPort: 8443, protocol: TCP}

@@ -1,0 +1,22 @@
+{
+  "resource" : {
+    "cloudflare_dns_record" : {
+      "agent_network_k8s" : {
+        "content" : "192.0.2.10",
+        "name" : "agent-network-k8s.example.com",
+        "proxied" : false,
+        "ttl" : 60,
+        "type" : "A",
+        "zone_id" : "${data.cloudflare_zone.zone.id}"
+      },
+      "agent_network_k8s_wildcard" : {
+        "content" : "192.0.2.10",
+        "name" : "*.agent-network-k8s.example.com",
+        "proxied" : false,
+        "ttl" : 60,
+        "type" : "A",
+        "zone_id" : "${data.cloudflare_zone.zone.id}"
+      }
+    }
+  }
+}

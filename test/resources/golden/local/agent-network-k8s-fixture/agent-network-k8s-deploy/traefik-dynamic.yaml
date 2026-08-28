@@ -1,0 +1,107 @@
+# Traefik's whole routing table, file provider only — no Kubernetes CRDs, no
+# docker provider, so the routing is desired state rather than discovery.
+#
+# TLS for the base hostname terminates here from the wildcard Secret (both
+# SANs: the pinned reverse-proxy build's per-name ACME is defective, so
+# nothing in this deployment runs ACME at all). Endpoint hostnames ride the
+# TCP passthrough: the rule matches ONLY subdomains of the base name, never
+# the bare base — Traefik evaluates matching TCP routers before HTTP routers,
+# so a HostSNI(`*`) catch-all would swallow the dashboard and the API.
+http:
+  routers:
+    an-dashboard:
+      rule: "Host(`agent-network-k8s.example.com`)"
+      entryPoints: [websecure]
+      tls: {}
+      service: an-dashboard
+      middlewares: [an-secure]
+      priority: 1
+    an-grpc:
+      rule: "Host(`agent-network-k8s.example.com`) && (PathPrefix(`/signalexchange.SignalExchange/`) || PathPrefix(`/management.ManagementService/`) || PathPrefix(`/management.ProxyService/`))"
+      entryPoints: [websecure]
+      tls: {}
+      service: an-server-h2c
+      priority: 100
+    an-backend:
+      rule: "Host(`agent-network-k8s.example.com`) && (PathPrefix(`/relay`) || PathPrefix(`/ws-proxy/`) || PathPrefix(`/api`) || PathPrefix(`/oauth2`))"
+      entryPoints: [websecure]
+      tls: {}
+      service: an-server
+      middlewares: [an-ratelimit, an-secure]
+      priority: 100
+  services:
+    an-dashboard:
+      loadBalancer:
+        servers:
+          - url: "http://dashboard.agent-network-gateway.svc.cluster.local:80"
+    an-server:
+      loadBalancer:
+        servers:
+          - url: "http://netbird-server.agent-network-gateway.svc.cluster.local:80"
+    an-server-h2c:
+      # gRPC needs an h2c backend; without it the management, signal and
+      # proxy streams never establish.
+      loadBalancer:
+        servers:
+          - url: "h2c://netbird-server.agent-network-gateway.svc.cluster.local:80"
+  middlewares:
+    an-ratelimit:
+      rateLimit:
+        average: 100
+        burst: 200
+    an-secure:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: strict-origin-when-cross-origin
+
+tcp:
+  routers:
+    proxy-passthrough:
+      # Endpoint subdomains only; TLS passes through to the reverse proxy,
+      # which serves them from the same wildcard pair. PROXY protocol v2
+      # preserves the original client address across the hop; the proxy
+      # trusts those headers from the pod network, and the ingress
+      # NetworkPolicy on its pod is what makes that trust mean "Traefik".
+      rule: 'HostSNIRegexp(`^[a-z0-9-]+\.agent-network-k8s\.example\.com$`)'
+      entryPoints: [websecure]
+      tls:
+        passthrough: true
+      service: proxy-tls
+  services:
+    proxy-tls:
+      loadBalancer:
+        serversTransport: pp-v2
+        servers:
+          - address: "reverse-proxy.agent-network-gateway.svc.cluster.local:443"
+  serversTransports:
+    pp-v2:
+      proxyProtocol:
+        version: 2
+
+udp:
+  routers:
+    # STUN rides the same internal ClusterIP the peers' hostAliases point the
+    # base name at, so the advertised stun:<base>:3478 resolves and routes.
+    # In-cluster peers are expected to connect on direct host candidates (pod
+    # IPs); this route keeps the advertisement honest rather than load-bearing.
+    an-stun:
+      entryPoints: [stun]
+      service: an-stun
+  services:
+    an-stun:
+      loadBalancer:
+        servers:
+          - address: "netbird-server.agent-network-gateway.svc.cluster.local:3478"
+
+tls:
+  certificates:
+    - certFile: /wildcard/tls.crt
+      keyFile: /wildcard/tls.key
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /wildcard/tls.crt
+        keyFile: /wildcard/tls.key

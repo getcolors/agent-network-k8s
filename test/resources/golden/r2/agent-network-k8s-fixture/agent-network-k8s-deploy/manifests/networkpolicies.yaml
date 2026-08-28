@@ -1,0 +1,248 @@
+# The whole traffic matrix, generated nowhere else: these policies, the
+# goldens that pin them, and the forbidden-probe list in smoke.sh are three
+# views of one table (PLAN §4). Anything absent is denied — both namespaces
+# open with default-deny in both directions, and every rule below is
+# directional. Both application pods run with
+# automountServiceAccountToken: false, so no in-pod principal can reach the
+# API server even if a route existed.
+#
+# One honest limit: open-source Calico cannot express FQDN egress, so the
+# reverse proxy — the one component that already holds the provider key —
+# gets CIDR-bounded internet egress on 443 with cluster, private, CGN and
+# link-local space carved out. The trust boundary is documented, not
+# pretended away.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: agent-network-gateway
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: traefik
+  namespace: agent-network-gateway
+spec:
+  podSelector:
+    matchLabels: {app: traefik}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # The public edge (80/443 through the load balancer) and the in-cluster
+    # faces: 443 for the peers' control-plane bootstrap, 3478/UDP for the
+    # advertised STUN address.
+    - ports:
+        - {port: 80, protocol: TCP}
+        - {port: 443, protocol: TCP}
+        - {port: 3478, protocol: UDP}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    - to:
+        - podSelector:
+            matchLabels: {app: netbird-server}
+      ports:
+        - {port: 80, protocol: TCP}
+        - {port: 3478, protocol: UDP}
+    - to:
+        - podSelector:
+            matchLabels: {app: dashboard}
+      ports:
+        - {port: 80, protocol: TCP}
+    - to:
+        - podSelector:
+            matchLabels: {app: reverse-proxy}
+      ports:
+        - {port: 8443, protocol: TCP}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: netbird-server
+  namespace: agent-network-gateway
+spec:
+  podSelector:
+    matchLabels: {app: netbird-server}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: traefik}
+      ports:
+        - {port: 80, protocol: TCP}
+        - {port: 3478, protocol: UDP}
+    # The reverse proxy reaches management directly (insecure gRPC on the
+    # Service; the hop never leaves the cluster) and STUN by advertisement.
+    - from:
+        - podSelector:
+            matchLabels: {app: reverse-proxy}
+      ports:
+        - {port: 80, protocol: TCP}
+        - {port: 3478, protocol: UDP}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dashboard
+  namespace: agent-network-gateway
+spec:
+  podSelector:
+    matchLabels: {app: dashboard}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: traefik}
+      ports:
+        - {port: 80, protocol: TCP}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: reverse-proxy
+  namespace: agent-network-gateway
+spec:
+  podSelector:
+    matchLabels: {app: reverse-proxy}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Endpoint TLS from Traefik, on the pod port — this rule is what makes
+    # NB_PROXY_TRUSTED_PROXIES (the pod CIDR) mean "Traefik".
+    - from:
+        - podSelector:
+            matchLabels: {app: traefik}
+      ports:
+        - {port: 8443, protocol: TCP}
+    # Peer transport from the SOCKS5 pod: ICE negotiates ephemeral ports on
+    # both sides, so the rule is port-unbounded by design (PLAN §4).
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: agent-network-agent}
+          podSelector:
+            matchLabels: {app: netbird-client}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    # Own control-plane bootstrap: management directly, signal/relay through
+    # Traefik (the base hostname resolves to Traefik's internal ClusterIP via
+    # hostAliases), STUN by advertisement.
+    - to:
+        - podSelector:
+            matchLabels: {app: netbird-server}
+      ports:
+        - {port: 80, protocol: TCP}
+        - {port: 3478, protocol: UDP}
+    - to:
+        - podSelector:
+            matchLabels: {app: traefik}
+      ports:
+        - {port: 443, protocol: TCP}
+    # Peer transport toward the SOCKS5 pod, port-unbounded (ICE).
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: agent-network-agent}
+          podSelector:
+            matchLabels: {app: netbird-client}
+    # The sole internet egress in the system: the upstream LLM provider on
+    # 443, with cluster, private, CGN and link-local space carved out.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+      ports:
+        - {port: 443, protocol: TCP}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: agent-network-agent
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent
+  namespace: agent-network-agent
+spec:
+  podSelector:
+    matchLabels: {app: agent}
+  policyTypes: [Ingress, Egress]
+  # No ingress rule: nothing may reach the agent. One egress rule: the
+  # SOCKS5 listener, nothing else — no kube-dns (the bridge targets the
+  # SOCKS Service's ClusterIP rendered at converge; the agent pod never
+  # resolves anything), no metadata, no API server.
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app: netbird-client}
+      ports:
+        - {port: 1080, protocol: TCP}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: netbird-client
+  namespace: agent-network-agent
+spec:
+  podSelector:
+    matchLabels: {app: netbird-client}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: agent}
+      ports:
+        - {port: 1080, protocol: TCP}
+  egress:
+    # Control-plane bootstrap via the base hostname (hostAliases → Traefik's
+    # internal ClusterIP) and the advertised STUN address.
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: agent-network-gateway}
+          podSelector:
+            matchLabels: {app: traefik}
+      ports:
+        - {port: 443, protocol: TCP}
+        - {port: 3478, protocol: UDP}
+    # Peer transport toward the reverse proxy, port-unbounded (ICE).
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: agent-network-gateway}
+          podSelector:
+            matchLabels: {app: reverse-proxy}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: build
+  namespace: agent-network-build
+spec:
+  # kaniko needs the registries, npm, Debian and GitHub; nothing needs
+  # kaniko. Deny all ingress, allow all egress.
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - {}

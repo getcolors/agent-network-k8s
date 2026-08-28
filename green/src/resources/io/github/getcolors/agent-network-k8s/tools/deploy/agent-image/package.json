@@ -1,0 +1,7 @@
+{
+  "name": "agent-network-k8s-agent",
+  "private": true,
+  "dependencies": {
+    "@anthropic-ai/claude-code": "<{ agent-network-claude-code-version }>"
+  }
+}

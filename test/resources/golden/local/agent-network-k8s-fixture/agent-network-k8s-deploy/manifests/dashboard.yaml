@@ -1,0 +1,62 @@
+# The dashboard in agent-network-only mode. `init_react_envs` — the startup
+# script that substitutes every $NETBIRD_* placeholder into the built assets —
+# exits 1 on a missing variable while supervisord carries on and nginx serves
+# the raw placeholders with `/` returning 200, so acceptance reads the served
+# chunks rather than trusting the status code.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  namespace: agent-network-gateway
+  labels: {app: dashboard}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: dashboard}
+  template:
+    metadata:
+      labels: {app: dashboard}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: dashboard
+          image: netbirdio/dashboard:v2.91.1@sha256:f3eb26c93ca9901a7385e88e12f6ad98d04e075e8817c664d73557fea123875f
+          env:
+            - {name: NETBIRD_MGMT_API_ENDPOINT, value: "https://agent-network-k8s.example.com"}
+            - {name: NETBIRD_MGMT_GRPC_API_ENDPOINT, value: "https://agent-network-k8s.example.com"}
+            - {name: AUTH_AUDIENCE, value: "netbird-dashboard"}
+            - {name: AUTH_CLIENT_ID, value: "netbird-dashboard"}
+            - {name: AUTH_CLIENT_SECRET, value: ""}
+            - {name: AUTH_AUTHORITY, value: "https://agent-network-k8s.example.com/oauth2"}
+            # Required: without it init_react_envs exits 1 and the dashboard
+            # serves placeholders.
+            - {name: USE_AUTH0, value: "false"}
+            - {name: AUTH_SUPPORTED_SCOPES, value: "openid profile email groups"}
+            - {name: AUTH_REDIRECT_URI, value: "/nb-auth"}
+            - {name: AUTH_SILENT_REDIRECT_URI, value: "/nb-silent-auth"}
+            - {name: NGINX_SSL_PORT, value: "443"}
+            - {name: LETSENCRYPT_DOMAIN, value: "none"}
+            # The agent-network preset: the dashboard hides the standard
+            # NetBird surfaces and opens directly into the Agent Network
+            # pages.
+            - {name: NETBIRD_AGENT_NETWORK_ONLY, value: "true"}
+          ports:
+            - {name: http, containerPort: 80}
+          readinessProbe:
+            httpGet: {path: /, port: 80}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+      # No probe can catch the placeholder failure mode (200 either way);
+      # acceptance reads the chunks.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard
+  namespace: agent-network-gateway
+  labels: {app: dashboard}
+spec:
+  type: ClusterIP
+  selector: {app: dashboard}
+  ports:
+    - {name: http, port: 80, targetPort: 80, protocol: TCP}

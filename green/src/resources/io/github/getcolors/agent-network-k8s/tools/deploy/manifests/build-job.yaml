@@ -1,0 +1,59 @@
+# The in-cluster agent-image build. The agent pod has no egress and VKE
+# nodes offer no host docker, so kaniko builds the image inside the cluster
+# and pushes it to the deployment-owned registry; the kubelet's pull — which
+# bypasses pod NetworkPolicy by design — is how the sealed agent pod gets it.
+#
+# The context arrives by streaming, not by object: converge.sh execs into the
+# waiting init container, extracts the tarball, verifies its sha256 against
+# __CONTEXT_SHA__, and touches .ready. The Job's name carries the context
+# hash, so an unchanged context is an already-completed Job and nothing
+# rebuilds. The deploy consumes only the pushed digest, read back from the
+# registry — tags are never trusted.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agent-image-build-__CONTEXT_SHA8__
+  namespace: agent-network-build
+  labels: {app: kaniko, context-sha: "__CONTEXT_SHA8__"}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {app: kaniko}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      initContainers:
+        - name: wait-context
+          image: <{ agent-network-kaniko-image }>
+          command:
+            - /busybox/sh
+            - -c
+            - |
+              set -eu
+              until [ -f /workspace/.ready ]; do sleep 1; done
+              cd /workspace
+              echo "__CONTEXT_SHA__  context.tgz" | sha256sum -c -
+              mkdir -p /workspace/context
+              tar -xzf context.tgz -C /workspace/context
+          volumeMounts:
+            - {name: workspace, mountPath: /workspace}
+      containers:
+        - name: kaniko
+          image: <{ agent-network-kaniko-image }>
+          args:
+            - "--dockerfile=/workspace/context/Dockerfile"
+            - "--context=dir:///workspace/context"
+            - "--destination=__IMAGE_DEST__"
+            - "--digest-file=/workspace/digest"
+          volumeMounts:
+            - {name: workspace, mountPath: /workspace}
+            - {name: docker-config, mountPath: /kaniko/.docker, readOnly: true}
+      volumes:
+        - name: workspace
+          emptyDir: {}
+        - name: docker-config
+          secret:
+            secretName: registry-push
+            items:
+              - {key: .dockerconfigjson, path: config.json}

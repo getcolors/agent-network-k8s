@@ -1,0 +1,106 @@
+# The SOCKS5 pod: the NetBird client in netstack mode — userspace WireGuard,
+# no TUN device, no capabilities — exposing an unauthenticated SOCKS5
+# listener the agent pod's NetworkPolicy is the only road to. State persists
+# on a small CSI volume so a reschedule reconnects from the enrolled identity
+# and never needs a second setup key.
+#
+# Netstack mode has no NetBird DNS ("peers by IP address only"), so the two
+# hostAliases below supply exactly what management's DNS would have served:
+# the base hostname lands on Traefik's internal ClusterIP (the bootstrap
+# path), and the minted endpoint hostname lands on the reverse proxy's
+# overlay address — the metered path still traverses the WireGuard tunnel,
+# so identity enforcement is untouched. Both are substituted by agent.sh
+# from live state and reconciled on drift.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: netbird-client-state
+  namespace: agent-network-agent
+  labels: {app: netbird-client}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 10Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netbird-client
+  namespace: agent-network-agent
+  labels: {app: netbird-client}
+spec:
+  replicas: 1
+  strategy:
+    # The state volume is ReadWriteOnce and the peer identity is singular;
+    # two client pods must never overlap.
+    type: Recreate
+  selector:
+    matchLabels: {app: netbird-client}
+  template:
+    metadata:
+      labels: {app: netbird-client}
+    spec:
+      automountServiceAccountToken: false
+      hostAliases:
+        - ip: "__TRAEFIK_INTERNAL_IP__"
+          hostnames: ["<{ agent-network-host }>"]
+        - ip: "__PROXY_OVERLAY_IP__"
+          hostnames: ["__ENDPOINT__"]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: netbird-client
+          image: <{ agent-network-client-image }>
+          command: ["/bin/sh", "/entry/socks-entry.sh"]
+          env:
+            - {name: NB_USE_NETSTACK_MODE, value: "true"}
+            - {name: NB_SOCKS5_LISTENER_ADDRESS, value: "0.0.0.0"}
+            - {name: NB_SOCKS5_LISTENER_PORT, value: "1080"}
+          ports:
+            - {name: socks, containerPort: 1080}
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - netbird --daemon-addr unix:///var/lib/netbird/daemon.sock status | grep -q 'Management: Connected'
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 90
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: state, mountPath: /var/lib/netbird}
+            - {name: entry, mountPath: /entry, readOnly: true}
+            - {name: run, mountPath: /run/netbird}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: state
+          persistentVolumeClaim: {claimName: netbird-client-state}
+        - name: entry
+          configMap: {name: socks-entry}
+        - name: run
+          # Memory-backed: the one-off setup key is streamed here over
+          # `kubectl exec` stdin on first enrollment — never a Kubernetes
+          # Secret, so etcd never holds a durable copy.
+          emptyDir: {medium: Memory}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: socks
+  namespace: agent-network-agent
+  labels: {app: netbird-client}
+spec:
+  type: ClusterIP
+  selector: {app: netbird-client}
+  ports:
+    - {name: socks, port: 1080, targetPort: 1080, protocol: TCP}
