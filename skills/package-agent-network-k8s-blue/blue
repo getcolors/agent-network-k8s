@@ -1,16 +1,17 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = []
+# dependencies = ["package-agent-network-k8s-blue", "blue"]
+#
+# [tool.uv.sources]
+# package-agent-network-k8s-blue = { git = "https://github.com/getcolors/agent-network-k8s.git", rev = "cf97f9795d524e5136926528e8467b454210ea56", subdirectory = "blue" }
+# blue = { git = "https://github.com/getcolors/blue.git", rev = "290f313ead5ca162875c33a049c880da017eae09" }
 # ///
 #
 # Managed by `bb pin` — do not edit by hand, and never invent a SHA.
 #
-# UNPINNED: this launcher carries no agent-network-k8s pin yet. `bb pin`
-# stamps the PEP 723 block above with immutable git sources after the
-# repository has been pushed; until then a standalone copy resolves nothing.
-# Point it at a checkout meanwhile:
-# AGENT_NETWORK_K8S_LIB_ROOT=/path/to/agent-network-k8s
+# Stamped by `bb pin`. AGENT_NETWORK_K8S_LIB_ROOT=/path/to/agent-network-k8s
+# still overrides the pin with a working tree.
 """Thin launcher for package-agent-network-k8s-blue.
 
 This file is both the skill payload and the repository entry point —
