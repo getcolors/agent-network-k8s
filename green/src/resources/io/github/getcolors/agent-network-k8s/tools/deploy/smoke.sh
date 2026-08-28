@@ -60,13 +60,21 @@ if [[ $MODE == fallback ]]; then EP_URL="https://$ENDPOINT:8443"; else EP_URL="h
 in_agent() { kubectl -n "$AG" exec deploy/agent -c claude -- "$@"; }
 
 # --- endpoint-mapping drift (checked before every probe run) -----------------
+#
+# The embedded proxy peer never appears in /api/peers; the authoritative
+# address is the network map management pushes the client — the same source
+# agent.sh rendered the mapping from.
 
 check_drift() {
+  # Same selection rule as agent.sh: stale registrations linger, the newest
+  # (greatest xid in the synthesized fqdn) is the live proxy.
   local live
-  live=$(api GET /peers | jq -r --arg a "$(cat "$STATE/agent-peer-id")" \
-    '[.[] | select(.id != $a)] | .[0].ip // empty')
-  if [[ "$live" != "$PROXY_OVERLAY_IP" ]]; then
-    log "FAIL: the proxy overlay address drifted ($PROXY_OVERLAY_IP -> $live); re-run create"
+  live=$(kubectl -n "$AG" exec deploy/netbird-client -- \
+           netbird status --json 2>/dev/null \
+         | jq -r '[.peers.details[]? | {id: (.fqdn // ""), ip: .netbirdIp}]
+                  | sort_by(.id) | last.ip // empty' | cut -d/ -f1)
+  if [[ -z "$live" || "$live" != "$PROXY_OVERLAY_IP" ]]; then
+    log "FAIL: the proxy overlay address drifted ($PROXY_OVERLAY_IP -> ${live:-none}); re-run create"
     exit 1
   fi
 }
@@ -75,10 +83,15 @@ check_drift() {
 
 gate_isolation() {
   log "gate 1: outer isolation (raw TCP from the agent container)"
+  # IPv6 targets included: VKE's Calico gives pods a unique-local address
+  # and a link-local default route as dual-stack plumbing, so the parent's
+  # route-table-shape assertion does not translate — reachability is the
+  # claim, and it is probed per family.
   for target in "1.1.1.1/443" "8.8.8.8/53" "140.82.121.4/443" "9.9.9.9/443" \
+                "2606:4700:4700::1111/443" "2001:4860:4860::8888/53" \
                 "169.254.169.254/80" "$KUBE_API_IP/443" "$KUBE_DNS_IP/53" \
                 "$TRAEFIK_INT/443" "$SERVER_IP/80"; do
-    host=${target%/*}; port=${target#*/}
+    host=${target%/*}; port=${target##*/}
     if in_agent timeout 5 bash -c "</dev/tcp/$host/$port" 2>/dev/null; then
       log "FAIL: the agent reached $host:$port directly; its only egress must be the SOCKS5 pod"
       exit 1
@@ -88,8 +101,9 @@ gate_isolation() {
     log "FAIL: the agent pod carries a tunnel interface; it must hold no overlay leg"
     exit 1
   fi
-  if [[ -n $(in_agent ip -6 route show default 2>/dev/null) ]]; then
-    log "FAIL: the agent has an IPv6 default route"
+  if in_agent ip -6 addr show scope global 2>/dev/null \
+       | grep -oE 'inet6 [0-9a-f:]+' | grep -qvE 'inet6 (fd|fc)'; then
+    log "FAIL: the agent holds a globally routable IPv6 address"
     exit 1
   fi
   # The control probe: the one path the agent may use must work, or the
@@ -101,10 +115,12 @@ gate_isolation() {
   log "gate 1 passed"
 
   log "gate 1b: inner isolation (CONNECT through the SOCKS5 listener)"
-  socks_code() { # destination reachable through the proxy?
-    in_agent env -u HTTPS_PROXY -u HTTP_PROXY \
+  socks_code() { # destination reachable through the proxy? 000 = refused
+    local out
+    out=$(in_agent env -u HTTPS_PROXY -u HTTP_PROXY \
       curl -sk -o /dev/null -w '%{http_code}' --max-time 15 \
-      --socks5 "$SOCKS_IP:1080" "$1" 2>/dev/null || echo 000
+      --socks5 "$SOCKS_IP:1080" "$1" 2>/dev/null || true)
+    echo "${out:-000}"
   }
   for url in "https://1.1.1.1/" "http://169.254.169.254/" \
              "https://$KUBE_API_IP/" "https://$TRAEFIK_INT/" "http://$SERVER_IP/"; do
@@ -129,7 +145,7 @@ gate_tunnel() {
   local up=0 status
   for _ in $(seq 1 30); do
     status=$(kubectl -n "$AG" exec deploy/netbird-client -- \
-      netbird --daemon-addr unix:///var/lib/netbird/daemon.sock status 2>&1 || true)
+      netbird status 2>&1 || true)
     if grep -qi 'Management: Connected' <<<"$status" && grep -qi 'Signal: Connected' <<<"$status"; then
       up=1; break
     fi
@@ -138,7 +154,7 @@ gate_tunnel() {
   if [[ $up != 1 ]]; then
     log "FAIL: the client's tunnel did not come up"
     kubectl -n "$AG" exec deploy/netbird-client -- \
-      netbird --daemon-addr unix:///var/lib/netbird/daemon.sock status -d >&2 || true
+      netbird status -d >&2 || true
     exit 1
   fi
   log "gate 2 passed"

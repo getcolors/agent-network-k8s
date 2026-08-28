@@ -44,39 +44,34 @@ endpoint=$(api GET /agent-network/settings | jq -r '.endpoint // empty')
 [[ -n $endpoint ]] || { log "FATAL: no endpoint; run bootstrap first"; exit 1; }
 printf '%s' "$endpoint" > "$STATE/endpoint"
 
-# The reverse proxy's overlay address: what management's synthesized DNS zone
-# would serve TUN-mode peers, supplied statically because netstack mode has
-# no NetBird DNS. Before the agent enrolls the proxy is the only peer; after,
-# it is the peer that is not the recorded agent.
-agent_peer=$(cat "$STATE/agent-peer-id" 2>/dev/null || true)
-proxy_ip=$(api GET /peers | jq -r --arg a "${agent_peer:-none}" \
-  '[.[] | select(.id != $a)] | .[0].ip // empty')
-[[ -n $proxy_ip ]] || { log "FATAL: no proxy peer is registered on the overlay"; exit 1; }
-peer_count=$(api GET /peers | jq -r --arg a "${agent_peer:-none}" \
-  '[.[] | select(.id != $a)] | length')
-if [[ $peer_count != 1 ]]; then
-  log "FATAL: expected exactly one non-agent peer (the reverse proxy), found $peer_count"
-  exit 1
-fi
-printf '%s' "$proxy_ip" > "$STATE/proxy-overlay-ip"
-log "endpoint $endpoint at proxy overlay address $proxy_ip"
-
 traefik_internal=$(kubectl -n "$GW" get svc traefik-internal -o jsonpath='{.spec.clusterIP}')
 image="$REGISTRY_URN/agent@$(cat "$STATE/agent-image-digest")"
 
 tmpdir=$(mktemp -d /dev/shm/an-k8s.XXXXXX 2>/dev/null || mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
-# --- the SOCKS5 pod ----------------------------------------------------------
+# --- the SOCKS5 pod, phase one: enroll ---------------------------------------
+#
+# The reverse proxy is an EMBEDDED proxy peer (peer.ProxyMeta.Embedded): it
+# never appears in /api/peers, only in the network map management pushes to
+# authorized peers. So its overlay address is read from the enrolled client
+# itself, and the endpoint hostAlias starts as an inert loopback placeholder
+# until that address exists — two applies, the second rolling the pod onto
+# the real mapping.
+
+render_client() { # render_client PROXY-OVERLAY-IP
+  sed -e "s|__TRAEFIK_INTERNAL_IP__|$traefik_internal|" \
+      -e "s|__PROXY_OVERLAY_IP__|$1|" \
+      -e "s|__ENDPOINT__|$endpoint|" \
+      "$MAN/netbird-client.yaml"
+}
 
 kubectl -n "$AG" create configmap socks-entry \
   --from-file=socks-entry.sh="$DIR/socks-entry.sh" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-sed -e "s|__TRAEFIK_INTERNAL_IP__|$traefik_internal|" \
-    -e "s|__PROXY_OVERLAY_IP__|$proxy_ip|" \
-    -e "s|__ENDPOINT__|$endpoint|" \
-    "$MAN/netbird-client.yaml" > "$tmpdir/netbird-client.yaml"
+known_proxy=$(cat "$STATE/proxy-overlay-ip" 2>/dev/null || echo "127.0.0.1")
+render_client "$known_proxy" > "$tmpdir/netbird-client.yaml"
 apply "$tmpdir/netbird-client.yaml"
 
 # First enrollment: the pod's entrypoint waits (bounded) for the key the
@@ -101,6 +96,41 @@ kubectl -n "$AG" rollout status deployment/netbird-client --timeout=900s
 
 # Enrollment verified, then the credential that made it possible is closed.
 bash "$DIR/bootstrap.sh" --post-enroll
+
+# --- phase two: the proxy's overlay address, from the network map ------------
+#
+# From this client's viewpoint the remote peer set is exactly one entry, the
+# embedded proxy peer; its address is what management's synthesized DNS zone
+# would serve TUN-mode peers.
+nb_status() {
+  kubectl -n "$AG" exec deploy/netbird-client -- \
+    netbird status --json 2>/dev/null
+}
+# Stale embedded-proxy registrations LINGER in the network map after a proxy
+# restart (observed live: the dead peer stays listed beside its replacement),
+# so "exactly one peer" is not a fact the map offers. The live proxy is the
+# NEWEST registration: peer ids are xid — k-sortable — and ride in the
+# synthesized fqdn (proxy-<id>-<suffix>), so the lexicographically greatest
+# id wins. The bridge-mode gate then validates the pick end-to-end; a wrong
+# one cannot pass silently.
+proxy_ip=""
+for _ in $(seq 1 36); do
+  proxy_ip=$(nb_status \
+    | jq -r '[.peers.details[]? | {id: (.fqdn // ""), ip: .netbirdIp}]
+             | sort_by(.id) | last.ip // empty' | cut -d/ -f1)
+  [[ -n $proxy_ip ]] && break
+  sleep 5
+done
+[[ -n $proxy_ip ]] || { log "FATAL: the network map never delivered a proxy peer"; exit 1; }
+printf '%s' "$proxy_ip" > "$STATE/proxy-overlay-ip"
+log "endpoint $endpoint at proxy overlay address $proxy_ip"
+
+if [[ "$proxy_ip" != "$known_proxy" ]]; then
+  log "rolling the client onto the endpoint mapping"
+  render_client "$proxy_ip" > "$tmpdir/netbird-client.yaml"
+  apply "$tmpdir/netbird-client.yaml"
+  kubectl -n "$AG" rollout status deployment/netbird-client --timeout=900s
+fi
 
 socks_ip=$(kubectl -n "$AG" get svc socks -o jsonpath='{.spec.clusterIP}')
 

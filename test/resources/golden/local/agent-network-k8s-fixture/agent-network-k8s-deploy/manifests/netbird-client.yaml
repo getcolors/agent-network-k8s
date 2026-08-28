@@ -60,6 +60,17 @@ spec:
             - {name: NB_USE_NETSTACK_MODE, value: "true"}
             - {name: NB_SOCKS5_LISTENER_ADDRESS, value: "0.0.0.0"}
             - {name: NB_SOCKS5_LISTENER_PORT, value: "1080"}
+            # Environment, not flags: the pinned 0.77.1 client silently
+            # ignores --daemon-addr and --log-file on `service run` (verified
+            # in-pod), while the NB_* variables work — and the CLI, the
+            # readiness probe and every kubectl exec inherit them.
+            - {name: NB_DAEMON_ADDR, value: "unix:///var/lib/netbird/daemon.sock"}
+            - {name: NB_LOG_FILE, value: "console"}
+            - {name: NB_LOG_LEVEL, value: "info"}
+            # `netbird up` resolves the current user, which needs $USER when
+            # the runtime uid has no passwd entry (restricted non-root).
+            - {name: USER, value: "netbird"}
+            - {name: HOME, value: "/var/lib/netbird"}
           ports:
             - {name: socks, containerPort: 1080}
           readinessProbe:
@@ -67,7 +78,7 @@ spec:
               command:
                 - /bin/sh
                 - -c
-                - netbird --daemon-addr unix:///var/lib/netbird/daemon.sock status | grep -q 'Management: Connected'
+                - "netbird status | grep -q 'Management: Connected'"
             initialDelaySeconds: 5
             periodSeconds: 10
             failureThreshold: 90

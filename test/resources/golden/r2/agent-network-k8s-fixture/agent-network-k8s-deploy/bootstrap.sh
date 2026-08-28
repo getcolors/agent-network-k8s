@@ -352,6 +352,16 @@ fi
 enrolled=$(api GET /peers | jq -r --arg g "$gid" \
   '[.[] | select((.groups // []) | any(.id==$g))] | length')
 if [[ $enrolled == 0 ]]; then
+  # A staged key whose server-side record has expired or been revoked can
+  # never enroll anything; discard it so a fresh one is minted.
+  if [[ -s $KEY_FILE ]]; then
+    live=$(api GET /setup-keys | jq -r \
+      '[.[] | select(.name=="colors-agent" and .valid==true and (.revoked|not))] | length')
+    if [[ ${live:-0} == 0 ]]; then
+      log "the staged setup key is no longer valid server-side; discarding it"
+      rm -f "$KEY_FILE"
+    fi
+  fi
   if [[ ! -s $KEY_FILE ]]; then
     # A leftover unclaimed key from a crashed run is closed before a fresh
     # one is minted, so exactly one usable key exists at a time.

@@ -25,7 +25,7 @@ echo "  ${ep:-not bootstrapped} (bridge mode: $(cat "$STATE/bridge-mode" 2>/dev/
 
 echo; echo "== tunnel"
 kubectl -n "$AG" exec deploy/netbird-client -- \
-  netbird --daemon-addr unix:///var/lib/netbird/daemon.sock status 2>/dev/null | sed -n '1,8p' \
+  netbird status 2>/dev/null | sed -n '1,8p' \
   || echo "  client pod is not running"
 
 echo; echo "== usage (access log)"

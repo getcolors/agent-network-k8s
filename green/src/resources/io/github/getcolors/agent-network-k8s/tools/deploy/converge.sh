@@ -32,7 +32,23 @@ source "$STATE/registry.env"
 REGISTRY_HOST=${REGISTRY_URN%%/*}
 REGISTRY_PATH=${REGISTRY_URN#*/}
 
-kubectl version --request-timeout=20s >/dev/null
+# A freshly created VKE cluster answers its API minutes after the resource
+# exists, and nodes join later still; both are awaited, bounded, so a first
+# converge does not fail on provider latency.
+log "waiting for the cluster API server"
+ok=0
+for _ in $(seq 1 90); do
+  kubectl version --request-timeout=10s >/dev/null 2>&1 && { ok=1; break; }
+  sleep 10
+done
+[[ $ok == 1 ]] || { log "FATAL: the API server never answered"; exit 1; }
+log "waiting for a Ready node"
+ok=0
+for _ in $(seq 1 90); do
+  if kubectl get nodes --no-headers 2>/dev/null | awk '$2=="Ready"' | grep -q .; then ok=1; break; fi
+  sleep 10
+done
+[[ $ok == 1 ]] || { log "FATAL: no node became Ready"; exit 1; }
 
 apply() { # apply FILE — server-side dry run first, then the real thing
   kubectl apply --dry-run=server -f "$1" >/dev/null \
@@ -52,17 +68,21 @@ apply "$MAN/namespaces.yaml"
 # every pod stays green. A converge finding them present touches nothing —
 # the idempotency the parent package proved the hard way.
 
-gen_secret() { # gen_secret NAME BYTES
+gen_secret() { # gen_secret NAME BYTES FILTER — FILTER strips what the consumer rejects
   if ! kubectl -n "$GW" get secret "$1" >/dev/null 2>&1; then
     log "generating create-once secret $1"
-    openssl rand -base64 "$2" | tr -d '\n=' \
+    openssl rand -base64 "$2" | tr -d "$3" \
       | kubectl -n "$GW" create secret generic "$1" --from-file=value=/dev/stdin >/dev/null
   fi
 }
-gen_secret an-relay-auth 32
-gen_secret an-session-cookie 32
-gen_secret an-datastore-key 32
-gen_secret an-admin-password 24
+# The datastore and cookie keys must remain STRICT base64 — the server's
+# field encryptor rejects unpadded input ("illegal base64 data") — so only
+# newlines are stripped there; the relay secret is a plain shared string and
+# drops padding like the parent's.
+gen_secret an-relay-auth 32 '\n='
+gen_secret an-session-cookie 32 '\n'
+gen_secret an-datastore-key 32 '\n'
+gen_secret an-admin-password 24 '\n='
 
 read_secret() { kubectl -n "$GW" get secret "$1" -o jsonpath='{.data.value}' | base64 -d; }
 

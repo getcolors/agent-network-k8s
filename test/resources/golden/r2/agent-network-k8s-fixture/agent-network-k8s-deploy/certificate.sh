@@ -27,12 +27,19 @@ log() { echo "agent-network-k8s-certificate: $*" >&2; }
 # --- lego, installed once and checksum-verified ------------------------------
 
 BIN="$LEGO/bin/lego"
+case "$(uname -m)" in
+  x86_64) arch=amd64 ;;
+  aarch64|arm64) arch=arm64 ;;
+  *) log "FATAL: unsupported launcher architecture $(uname -m)"; exit 1 ;;
+esac
 if ! [[ -x $BIN ]] || ! "$BIN" --version 2>/dev/null | grep -q " $V "; then
-  log "installing lego $V"
+  log "installing lego $V (linux_$arch)"
   curl -fsSL -o "$LEGO/bin/lego.tgz" \
-    "https://github.com/go-acme/lego/releases/download/v${V}/lego_v${V}_linux_amd64.tar.gz"
+    "https://github.com/go-acme/lego/releases/download/v${V}/lego_v${V}_linux_${arch}.tar.gz"
+  # Anchored: the checksums file also lists lego_v..._linux_<arch>.tar.gz.sbom.json,
+  # and an unanchored grep would feed sha256sum a second, wrong line.
   curl -fsSL "https://github.com/go-acme/lego/releases/download/v${V}/lego_${V}_checksums.txt" \
-    | grep "lego_v${V}_linux_amd64.tar.gz" | sed "s#  .*#  $LEGO/bin/lego.tgz#" | sha256sum -c -
+    | grep "lego_v${V}_linux_${arch}.tar.gz\$" | sed "s#  .*#  $LEGO/bin/lego.tgz#" | sha256sum -c -
   tar -xzf "$LEGO/bin/lego.tgz" -C "$LEGO/bin" lego
   chmod 0755 "$BIN"
   rm -f "$LEGO/bin/lego.tgz"
