@@ -4,5 +4,5 @@
     "strict": true, "noEmit": true, "allowImportingTsExtensions": true,
     "types": ["bun"], "skipLibCheck": true
   },
-  "include": ["src", "test", "text-imports.d.ts", "../skills/package-agent-network-k8s-red/red"]
+  "include": ["src", "test", "../skills/package-agent-network-k8s-red/red"]
 }
