@@ -45,6 +45,12 @@ npx skills add getcolors/agent-network-k8s@package-agent-network-k8s-green
 ./green delete             # guarded; needs a one-run override
 ```
 
+Three implementations render byte-identical output from the same
+`colors.yml`: Green (Clojure/Babashka, `package-agent-network-k8s-green`),
+Red (TypeScript/Bun, `package-agent-network-k8s-red`), and Blue (Python/uv,
+`package-agent-network-k8s-blue`). `./scripts/parity.sh` holds them to that,
+byte for byte, across both state backends.
+
 Credentials live in a gitignored `.envrc.private` as `COLORS_PAR_*`
 variables; see
 [`skills/package-agent-network-k8s-green/references/configuration.md`](skills/package-agent-network-k8s-green/references/configuration.md).

@@ -13,9 +13,9 @@
 <script src="https://rybbit.getcolors.ai/api/script.js" data-site-id="9fb9c41a6d49" defer></script>
 </head>
 <body><main>
-  <p class="eyebrow">GREEN PACKAGE SKILL · VULTR KUBERNETES ENGINE · NETBIRD AGENT NETWORK · CLAUDE CODE</p>
+  <p class="eyebrow">GREEN · RED · BLUE PACKAGE SKILL · VULTR KUBERNETES ENGINE · NETBIRD AGENT NETWORK · CLAUDE CODE</p>
   <h1>Agent Network K8s Package Skill</h1>
-  <p class="lead">A reproducible Green workflow for a <a href="https://docs.netbird.io/agent-network">NetBird Agent Network</a> demo on managed Kubernetes: a keyless, policy-gated LLM endpoint on a VKE cluster — and a two-pod application whose agent can reach nothing but its SOCKS5 leg.</p>
+  <p class="lead">A reproducible Green, Red, or Blue workflow for a <a href="https://docs.netbird.io/agent-network">NetBird Agent Network</a> demo on managed Kubernetes: a keyless, policy-gated LLM endpoint on a VKE cluster — and a two-pod application whose agent can reach nothing but its SOCKS5 leg.</p>
 
   <div class="callout"><strong>The isolation is the demo — and it is unprivileged.</strong> The agent pod runs under <code>restricted</code> Pod Security behind a default-deny NetworkPolicy whose single egress rule is the NetBird client pod: a netstack SOCKS5 listener — userspace WireGuard, no TUN device, no capabilities. Its only path to an LLM is the agent-network endpoint over the tunnel, where the request carries the peer's identity, passes the policy, hits the model allowlist and the budget caps, and lands in the access log — with the Anthropic key held server-side, never in the pod. Acceptance probes the boundary from both sides: raw TCP around the proxy, and CONNECT probes through it.</div>
 
@@ -25,7 +25,7 @@ cp .agents/skills/package-agent-network-k8s-green/green ./green
 chmod +x green
 ./green build
 ./green create --dry-run</code></pre>
-  <p>Build renders reproducible output and dry-run walks the workflow without provider side effects. Real creation and deletion require explicit authorization.</p>
+  <p>Build renders reproducible output and dry-run walks the workflow without provider side effects. Real creation and deletion require explicit authorization. Equivalent Red and Blue skills ship <code>red</code> and <code>blue</code> launchers rendering byte-identical output.</p>
 
   <h2>Architecture</h2>
   <div class="grid">

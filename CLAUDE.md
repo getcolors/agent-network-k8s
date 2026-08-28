@@ -2,10 +2,11 @@
 
 ## Repository
 
-`agent-network-k8s` is a green-only Package Skill for the
-[NetBird Agent Network](https://docs.netbird.io/agent-network) demo — keyless,
-identity-gated LLM access — re-architected from one host onto **Vultr
-Kubernetes Engine**. OpenTofu manages the VKE cluster, a deployment-owned
+`agent-network-k8s` is a Package Skill in three colours — green
+(Clojure/Babashka, canonical), red (TypeScript/Bun), blue (Python/uv) — for
+the [NetBird Agent Network](https://docs.netbird.io/agent-network) demo —
+keyless, identity-gated LLM access — re-architected from one host onto
+**Vultr Kubernetes Engine**. OpenTofu manages the VKE cluster, a deployment-owned
 Vultr Container Registry, and two unproxied Cloudflare `A` records: the base
 name and its **wildcard**. kubectl (no Ansible, no SSH — the nodes are
 managed and every operation goes through the generated kubeconfig) converges
@@ -112,26 +113,36 @@ The agent pod can reach exactly one address, and the LLM only through it:
 cd green && bb test           # validation, tools, workflow
 cd green && bb golden         # two backends (local, r2), byte for byte
 cd green && bb golden:accept  # after an intended change — read the diff first
-./scripts/golden.sh           # same, from the repository root
-./scripts/launcher.sh         # launcher self-checks
-cd green && bb pin            # stamp the payload after a push
+cd red && bun test && bun run typecheck
+cd blue && uv sync && uv run pytest
+./scripts/golden.sh           # same as bb golden, from the repository root
+./scripts/parity.sh           # three colours, both state backends, byte for byte
+./scripts/launcher.sh         # launcher self-checks, all three payloads
+cd green && bb pin            # stamp the three payloads after a push
 cd green && ./green build     # render; contacts nothing
 cd green && ./green create --dry-run
 ```
+
+A change to shared behaviour lands in green, red, and blue in the same
+commit and passes `./scripts/parity.sh` or it is not done: red/resources and
+blue's embedded resources are byte-for-byte copies of green's template tree,
+and the copies are the mechanism.
 
 Never run a real create/delete without explicit authorization. Never edit or
 read `.colors/`, and never read `.envrc.private`.
 
 ## Coupling
 
-The package pins only the Green SDK, in `green/deps.edn` — like `k8s`, its
-Vultr templates and provider table are its own; there is no ONCE pin.
-Working-tree overrides: `AGENT_NETWORK_K8S_LIB_ROOT` (this repository's
-root), `GREEN_LIB_ROOT`. `green/green` is a symlink to the skill payload; in
-a deployment it is a **copy** that must be refreshed after
+The package pins only the SDKs — green transitively via `green/deps.edn`,
+red and blue inside their payloads (`red/package.json` mirrors the red pin
+for the checkout) — like `k8s`, its Vultr templates and provider table are
+its own; there is no ONCE pin. Working-tree overrides:
+`AGENT_NETWORK_K8S_LIB_ROOT` (this repository's root), `GREEN_LIB_ROOT`.
+`green/green`, `red/red`, and `blue/blue` are symlinks to the skill
+payloads; in a deployment each is a **copy** that must be refreshed after
 `npx skills update -p`. After committing and pushing package code, run
-`bb pin` (in `green/`), commit the launcher stamp, and push again. Do not
-invent or hand-edit any pin.
+`bb pin` (in `green/`) — it stamps all three payloads — commit the launcher
+stamps, and push again. Do not invent or hand-edit any pin.
 
 ## Documentation
 
