@@ -261,15 +261,30 @@
 
 (defn kubeconfig-error
   "Why the profile's kubeconfig must not be used, or nil: a bearer credential
-  owned by someone else is not this deployment's to wield."
+  that is a symlink, not a regular file, group/world-readable, or owned by
+  someone else is not this deployment's to wield. Called on every execution
+  path that wields it — workflow scripts, status, and the kubectl verb."
   [opts]
-  (let [f (io/file (kubeconfig-path opts))]
+  (let [f (io/file (kubeconfig-path opts))
+        p (.toPath f)
+        nofollow (into-array java.nio.file.LinkOption
+                             [java.nio.file.LinkOption/NOFOLLOW_LINKS])]
     (when (.exists f)
-      (let [owner (str (java.nio.file.Files/getOwner
-                        (.toPath f) (make-array java.nio.file.LinkOption 0)))
-            me (System/getProperty "user.name")]
-        (when-not (= owner me)
-          (str "kubeconfig at " f " is owned by " owner ", not " me))))))
+      (or (when (java.nio.file.Files/isSymbolicLink p)
+            (str "kubeconfig at " f " is a symlink"))
+          (when-not (java.nio.file.Files/isRegularFile p nofollow)
+            (str "kubeconfig at " f " is not a regular file"))
+          (let [owner (str (java.nio.file.Files/getOwner p nofollow))
+                me (System/getProperty "user.name")]
+            (when-not (= owner me)
+              (str "kubeconfig at " f " is owned by " owner ", not " me)))
+          (let [perms (java.nio.file.Files/getPosixFilePermissions p nofollow)]
+            (when (some #(contains? perms %)
+                        [java.nio.file.attribute.PosixFilePermission/GROUP_READ
+                         java.nio.file.attribute.PosixFilePermission/GROUP_WRITE
+                         java.nio.file.attribute.PosixFilePermission/OTHERS_READ
+                         java.nio.file.attribute.PosixFilePermission/OTHERS_WRITE])
+              (str "kubeconfig at " f " is not owner-only; chmod 600 it")))))))
 
 (defn run-script
   "Run one rendered deploy script with the caller's terminal attached. The
@@ -364,9 +379,10 @@
   (when (= :delete (:green/event opts))
     (doseq [f [(kubeconfig-path opts)]]
       (let [file (io/file f)] (when (.exists file) (io/delete-file file))))
-    (let [state (io/file (state-dir opts))]
-      (when (.exists state)
-        (doseq [f (reverse (file-seq state))] (io/delete-file f true)))))
+    (doseq [dir [(io/file (state-dir opts))
+                 (io/file (profile-dir opts) "proofs")]]
+      (when (.exists dir)
+        (doseq [f (reverse (file-seq dir))] (io/delete-file f true)))))
   (assoc opts :green/exit 0))
 
 ;; ------------------------------------------------------------- kubectl verb
@@ -378,10 +394,16 @@
   (let [opts (assoc (green-cli/read-state state-file (slurp state-file)) :green/state-file state-file)
         dir (tool-dir opts deploy-tool)
         script (io/file dir "status.sh")]
-    (if-not (.exists script)
+    (cond
+      (not (.exists script))
       (do (binding [*out* *err*]
             (println (str "no rendered status script at " script "; run build first")))
           2)
+
+      (kubeconfig-error opts)
+      (do (binding [*out* *err*] (println (kubeconfig-error opts))) 2)
+
+      :else
       (:exit (process/run-inherit
               ["env" (str "KUBECONFIG=" (kubeconfig-path opts))
                (str "STATE_DIR=" (state-dir opts))
@@ -394,8 +416,14 @@
   [state-file args]
   (let [opts (assoc (green-cli/read-state state-file (slurp state-file)) :green/state-file state-file)
         kc (kubeconfig-path opts)]
-    (if-not (.exists (io/file kc))
+    (cond
+      (not (.exists (io/file kc)))
       (do (binding [*out* *err*]
             (println (str "no kubeconfig at " kc "; run create first")))
           2)
+
+      (kubeconfig-error opts)
+      (do (binding [*out* *err*] (println (kubeconfig-error opts))) 2)
+
+      :else
       (:exit (process/run-inherit (into ["env" (str "KUBECONFIG=" kc) "kubectl"] args))))))

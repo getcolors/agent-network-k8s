@@ -56,24 +56,41 @@ kubectl delete namespace "$GW" --ignore-not-found --timeout=300s || true
 # The provider is the authority on what still bills. Best-effort (the tofu
 # destroy that follows removes the cluster either way), but leftovers are
 # surfaced loudly rather than assumed gone.
-vultr_api() { curl -fsS -H "Authorization: Bearer ${COLORS_PAR_VULTR_API_KEY:-}" "https://api.vultr.com/v2$1" 2>/dev/null; }
+# An API failure is NOT absence: only a successful listing that lacks the
+# resource counts as gone; anything else is surfaced as unverified.
+vultr_api() { curl -fsS -H "Authorization: Bearer ${COLORS_PAR_VULTR_API_KEY:-}" "https://api.vultr.com/v2$1"; }
 if [[ -n ${COLORS_PAR_VULTR_API_KEY:-} ]]; then
   if [[ -n ${volume_ids:-} ]]; then
+    verdict="unverified"
     for _ in $(seq 1 30); do
-      live=$(vultr_api "/blocks?per_page=500" | jq -r '.blocks[].id' 2>/dev/null || true)
-      leftover=$(comm -12 <(sort <<<"$volume_ids") <(sort <<<"$live") | grep . || true)
-      [[ -z $leftover ]] && break
+      if live=$(vultr_api "/blocks?per_page=500" 2>/dev/null | jq -r '.blocks[].id' 2>/dev/null); then
+        leftover=$(comm -12 <(sort <<<"$volume_ids") <(sort <<<"$live") | grep . || true)
+        if [[ -z $leftover ]]; then verdict="absent"; break; else verdict="present"; fi
+      fi
       sleep 10
     done
-    [[ -z ${leftover:-} ]] || log "WARNING: block volumes still in the account: $leftover — delete them manually"
+    case $verdict in
+      absent) log "block volumes confirmed absent at the provider" ;;
+      present) log "WARNING: block volumes still in the account: $leftover — delete them manually" ;;
+      *) log "WARNING: could not verify block-volume deletion against the Vultr API — check manually" ;;
+    esac
   fi
   if [[ -n ${lb_ip:-} ]]; then
+    verdict="unverified"
     for _ in $(seq 1 30); do
-      vultr_api "/load-balancers?per_page=500" | jq -e --arg ip "$lb_ip" \
-        '.load_balancers[] | select(.ipv4==$ip)' >/dev/null 2>&1 || { lb_ip=""; break; }
+      if lbs=$(vultr_api "/load-balancers?per_page=500" 2>/dev/null); then
+        if jq -e --arg ip "$lb_ip" '.load_balancers[] | select(.ipv4==$ip)' <<<"$lbs" >/dev/null 2>&1
+        then verdict="present"
+        else verdict="absent"; break
+        fi
+      fi
       sleep 10
     done
-    [[ -z $lb_ip ]] || log "WARNING: the load balancer at $lb_ip is still in the account — delete it manually"
+    case $verdict in
+      absent) log "load balancer confirmed absent at the provider" ;;
+      present) log "WARNING: the load balancer at $lb_ip is still in the account — delete it manually" ;;
+      *) log "WARNING: could not verify load-balancer deletion against the Vultr API — check manually" ;;
+    esac
   fi
 fi
 

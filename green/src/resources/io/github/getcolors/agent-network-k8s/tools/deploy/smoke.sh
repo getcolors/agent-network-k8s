@@ -430,14 +430,21 @@ if [[ ! -f $STATE/disrupt-tested ]]; then
 fi
 
 # Ephemeral converge diagnostics (never the durable record — that is the
-# command output): what passed, when, against which cluster and endpoint.
+# command output): a timestamped, cluster-bound, hash-carrying artifact per
+# passing run, redacted by construction.
+proofs_dir="$(dirname "$STATE")/proofs"
+mkdir -p "$proofs_dir"
+ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 {
-  echo "passed-at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "cluster: $(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null)"
+  echo "passed-at: $ts"
+  echo "cluster-id: $(kubectl get namespace kube-system -o jsonpath='{.metadata.uid}' 2>/dev/null)"
+  echo "cluster-server: $(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null)"
   echo "endpoint: $ENDPOINT"
   echo "bridge-mode: $MODE"
   echo "proxy-overlay: $PROXY_OVERLAY_IP"
+  echo "desired-sha256: $(sha256sum "$DIR/desired.json" | awk '{print $1}')"
+  echo "policies-sha256: $(sha256sum "$DIR/manifests/networkpolicies.yaml" | awk '{print $1}')"
   echo "gates: isolation-outer isolation-inner tunnel keyless denial-guardrail denial-routing payload external-403 attribution limits hygiene disruption"
-} > "$STATE/proofs-summary"
+} > "$proofs_dir/$ts.txt"
 
 log "PASS: isolation (outer and inner), tunnel, keyless path, both denials, payload, external denial, attribution, limits, hygiene"
