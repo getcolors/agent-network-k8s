@@ -44,7 +44,7 @@
         slurp-target (fn [suffix]
                        (slurp (first (filter #(str/ends-with? % suffix) written))))]
     (testing "every deploy file renders"
-      (is (= (+ 2 (count tools/deploy-files)) (count written))))
+      (is (= (+ 3 (count tools/deploy-files)) (count written))))
     (testing "the host reaches the scripts and manifests"
       (is (str/includes? (slurp-target "bootstrap.sh") "agent-network-k8s.example.com"))
       (is (str/includes? (slurp-target "manifests/proxy.yaml")

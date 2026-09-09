@@ -1,0 +1,11 @@
+{
+  "terraform" : {
+    "backend" : {
+      "s3" : {
+        "bucket" : "tofu-state-example",
+        "key" : "agent-network-k8s-fixture/agent-network-k8s-registry.tfstate",
+        "region" : "us-east-1"
+      }
+    }
+  }
+}

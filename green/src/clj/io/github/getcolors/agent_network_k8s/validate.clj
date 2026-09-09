@@ -3,6 +3,8 @@
   Depends only on the SDK: like `k8s`, this package carries its own provider
   registry rather than pinning ONCE for one lookup table."
   (:require [clojure.string :as str]
+            [io.github.getcolors.compute :as compute]
+            [io.github.getcolors.compute-managed :as managed]
             [clojure.walk :as walk]
             [green.cli :as green-cli]
             [io.github.getcolors.agent-network-k8s.utils :as utils]))
@@ -10,20 +12,10 @@
 (def profile-par (green-cli/par-name :profile))
 
 (def providers
-  {:provider-compute
-   {"vultr" {:secrets [:vultr-api-key]
-             :tofu-env {:vultr-api-key "VULTR_API_KEY"}}}
-   :provider-dns
-   {"cloudflare" {:secrets [:cloudflare-api-token]
-                  :tofu-env {}}}
-   :provider-backend
-   {"local" {:secrets [] :tofu-env {}}
-    "s3" {:secrets [:s3-access-key-id :s3-secret-access-key]
-          :tofu-env {:s3-access-key-id "AWS_ACCESS_KEY_ID"
-                     :s3-secret-access-key "AWS_SECRET_ACCESS_KEY"}}
-    "r2" {:secrets [:r2-access-key-id :r2-secret-access-key]
-          :tofu-env {:r2-access-key-id "AWS_ACCESS_KEY_ID"
-                     :r2-secret-access-key "AWS_SECRET_ACCESS_KEY"}}}})
+  {:provider-registry {"vultr" {:secrets [:vultr-api-key] :tofu-env {:vultr-api-key "VULTR_API_KEY"}}}
+   :provider-dns {"cloudflare" {:secrets [:cloudflare-api-token] :tofu-env {:cloudflare-api-token "CLOUDFLARE_API_TOKEN"}}}
+   :provider-backend (into {} (for [[key descriptor] (:backend compute/registry)]
+     [(name key) (assoc descriptor :secrets (mapv keyword (:secrets descriptor)))]))})
 
 (def required
   "Every key desired state must carry. There is no `vultr-name`: the Compute
@@ -45,8 +37,8 @@
    :agent-network-claude-code-version :agent-network-privoxy-version
    :agent-network-gost-version :agent-network-gost-sha256
    :agent-network-lego-version
-   :vultr-region :vultr-vke-version :vultr-node-plan :vultr-node-count
-   :vultr-registry-plan :vultr-http-sources :vke-pod-cidr])
+   :vultr-region
+   :vultr-registry-plan  ])
 
 (def image-keys
   [:agent-network-server-image :agent-network-dashboard-image
@@ -78,14 +70,9 @@
   [v]
   (or (missing? v) (= "REPLACE_ME" (str/trim (str v)))))
 
-(defn compute-name
-  "What this deployment calls its cluster. Every label — the node pool's, the
-  registry's (lowercased, non-alphanumerics stripped: Vultr registry names
-  accept nothing else) — derives from this and never from the raw override
-  key or a second copy of the profile (§3)."
-  [opts]
-  (let [override (:vultr-name opts)]
-    (if (placeholder? override) (str (:profile opts)) (str/trim (str override)))))
+(defn compute-name [opts]
+  (try (get-in (managed/plan-managed-kubernetes opts) [:params :name])
+       (catch Exception _ (str (:profile opts)))))
 
 (defn registry-name [opts] (utils/registry-name (compute-name opts)))
 
@@ -150,16 +137,23 @@
 
 (defn- entry [opts slot] (get-in providers [slot (get opts slot)]))
 
+(defn managed-application-errors [opts]
+  (when-not (seq (managed/managed-errors opts))
+    (try
+      (let [settings (managed/managed-application-settings opts)]
+        (if-not (:pod_cidr settings) [":compute-pod-cidr is required"]
+          (do (managed/managed-application-artifacts opts ["managed-cleanup.sh"]) [])))
+      (catch Exception error [(ex-message error)]))))
+
 (defn state-errors [opts]
   (vec
    (concat
     (for [k required :when (missing? (get opts k))] (str k " is required"))
-    (when-not (= "vultr" (:provider-compute opts))
-      [":provider-compute must be vultr"])
+    (managed/managed-errors opts)
+    (managed-application-errors opts)
     (when-not (= "cloudflare" (:provider-dns opts))
       [":provider-dns must be cloudflare"])
-    (when-not (contains? #{"local" "s3" "r2"} (:provider-backend opts))
-      [":provider-backend must be local, s3, or r2"])
+
     (when-not (boolean? (:compute-prevent-destroy opts))
       [":compute-prevent-destroy must be true or false"])
     (when (and (not (missing? (:agent-network-host opts)))
@@ -193,16 +187,6 @@
     (when-not (or (missing? (:agent-network-gost-sha256 opts))
                   (re-matches sha256-re (str (:agent-network-gost-sha256 opts))))
       [":agent-network-gost-sha256 must be the 64-hex sha256 of the release tarball"])
-    (when-not (or (missing? (:vultr-vke-version opts))
-                  (re-matches vke-version-re (str (:vultr-vke-version opts))))
-      [":vultr-vke-version must look like v1.35.2+1"])
-    (when-not (or (missing? (:vultr-node-count opts))
-                  (and (integer? (:vultr-node-count opts))
-                       (<= 1 (:vultr-node-count opts) 16)))
-      [":vultr-node-count must be an integer between 1 and 16"])
-    (when-not (or (missing? (:vke-pod-cidr opts))
-                  (re-matches cidr-re (str (:vke-pod-cidr opts))))
-      [":vke-pod-cidr must be a CIDR block"])
     (when-not (or (missing? (:agent-network-log-level opts))
                   (contains? #{"error" "warn" "info" "debug"}
                              (str (:agent-network-log-level opts))))
@@ -235,16 +219,7 @@
     (when (seq (remove missing? [(:agent-network-provider-models opts)
                                  (:agent-network-allowed-models opts)]))
       (model-errors opts))
-    (let [srcs (:vultr-http-sources opts)]
-      (when (and (not (missing? srcs))
-                 (or (not (sequential? srcs)) (empty? srcs)
-                     (some #(not (re-matches cidr-re (str %))) srcs)))
-        [":vultr-http-sources must be a non-empty list of IPv4 CIDRs"]))
-    ;; The override is validated against the provider's rules rather than
-    ;; passed through unread (Compute Name Standard §2).
-    (when-not (or (placeholder? (:vultr-name opts))
-                  (re-matches vultr-name-re (str/trim (str (:vultr-name opts)))))
-      [":vultr-name must be letters, digits, dot, dash or underscore"]))))
+)))
 
 (defn backend-secrets [opts]
   (:secrets (entry opts :provider-backend)))
@@ -281,7 +256,7 @@
 
 (defn tofu-env [opts slot]
   (case slot
-    :provider-compute {:vultr-api-key "VULTR_API_KEY"}
+    :provider-registry {:vultr-api-key "VULTR_API_KEY"}
     :provider-dns {:cloudflare-api-token "CLOUDFLARE_API_TOKEN"}
-    :provider-backend (:tofu-env (entry opts :provider-backend) {})
+    :provider-backend (if (= "r2" (:provider-backend opts)) {:r2-access-key-id "AWS_ACCESS_KEY_ID" :r2-secret-access-key "AWS_SECRET_ACCESS_KEY"} {})
     {}))

@@ -10,7 +10,7 @@ set -euo pipefail
 # references to it).
 #
 # Two variants, because the goldens have a second axis: the same fixture is
-# rendered under the local state backend and again under r2, the way golden.sh
+# rendered under the S3 state backend and again under r2, the way golden.sh
 # produces its trees — COLORS_PAR_PROVIDER_BACKEND overlaid on the one
 # fixture. Parity means every backend.tf.json agrees in every colour.
 #
@@ -41,7 +41,7 @@ build_variant() {
   diff -r "$tmp/$variant/green" "$tmp/$variant/blue"
 }
 
-build_variant local COLORS_PAR_PROVIDER_BACKEND=local
+build_variant s3 COLORS_PAR_PROVIDER_BACKEND=s3
 build_variant r2 COLORS_PAR_PROVIDER_BACKEND=r2
 
 diff -r "$root/green/src/resources/io/github/getcolors/agent-network-k8s" "$root/red/resources"

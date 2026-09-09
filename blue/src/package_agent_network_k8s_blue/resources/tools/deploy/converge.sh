@@ -24,6 +24,12 @@ mkdir -p "$STATE"
 
 log() { echo "agent-network-k8s-converge: $*" >&2; }
 
+# Finish verification from an earlier teardown before creating replacements.
+if [[ -e $STATE/compute-cleanup.json || -L $STATE/compute-cleanup.json ]]; then
+  bash "$DIR/managed-cleanup.sh" "$STATE/compute-cleanup.json"
+  rm -- "$STATE/compute-cleanup.json"
+fi
+
 # Registry credentials arrive as a private state file written by the
 # infrastructure stage — never argv, never a rendered template.
 # shellcheck disable=SC1091
@@ -160,8 +166,8 @@ in_cidr() { # in_cidr IP CIDR
   [[ $(( $(ip_to_int "$ip") >> (32 - mask) )) -eq $(( $(ip_to_int "$base") >> (32 - mask) )) ]]
 }
 server_ip=$(kubectl -n "$GW" get pod -l app=netbird-server -o jsonpath='{.items[0].status.podIP}')
-if ! in_cidr "$server_ip" "<{ vke-pod-cidr }>"; then
-  log "FATAL: pod address $server_ip is outside vke-pod-cidr <{ vke-pod-cidr }>; fix colors.yml"
+if ! in_cidr "$server_ip" "<{ compute-pod-cidr }>"; then
+  log "FATAL: pod address $server_ip is outside vke-pod-cidr <{ compute-pod-cidr }>; fix colors.yml"
   exit 1
 fi
 

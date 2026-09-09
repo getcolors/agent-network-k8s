@@ -1,3 +1,5 @@
+import {managed_application_artifacts,managed_application_settings,managed_kubeconfig_path} from 'colors-compute-red';
+export {infrastructureStep,loadManagedStep} from './compute.ts';
 // VKE infrastructure, Cloudflare DNS, and kubectl-driven deploy stages, the
 // port of io.github.getcolors.agent-network-k8s.tools.
 
@@ -12,7 +14,7 @@ import type { Opts } from "red/workflow";
 import { StepError, failed } from "red/workflow";
 import * as validate from "./validate.ts";
 
-export const infrastructureTool = "agent-network-k8s-infrastructure";
+export const infrastructureTool = "agent-network-k8s-registry";
 export const dnsTool = "agent-network-k8s-dns";
 export const deployTool = "agent-network-k8s-deploy";
 export const templateOpts = PRESERVE_JINJA_DELIMITERS;
@@ -47,7 +49,7 @@ export function profileDir(opts: Opts): string {
 }
 
 export function kubeconfigPath(opts: Opts): string {
-  return join(profileDir(opts), "kubeconfig");
+  return managed_kubeconfig_path(opts);
 }
 
 export function stateDir(opts: Opts): string {
@@ -121,19 +123,6 @@ export function infrastructureData(opts: Opts): Opts {
 // minors, so the pin is checked against the live supported list while failing
 // is still free — a tofu apply that dies half-way leaves a cluster to clean
 // up, this check leaves nothing.
-export async function vkeVersionError(opts: Opts): Promise<string | undefined> {
-  const { exit, out } = await runtime.exec(
-    ["curl", "-fsS", "-H", `Authorization: Bearer ${opts["vultr-api-key"]}`,
-     "https://api.vultr.com/v2/kubernetes/versions"]);
-  if (exit !== 0) return undefined;
-  const versions = (JSON.parse(out) as { versions?: string[] }).versions;
-  if (Array.isArray(versions) && versions.length > 0 &&
-      !versions.includes(String(opts["vultr-vke-version"]))) {
-    return `vultr-vke-version ${opts["vultr-vke-version"]}` +
-      ` is not offered by VKE; currently supported: ${versions.join(", ")}`;
-  }
-  return undefined;
-}
 
 export function outputParams(result: Opts): Opts | undefined {
   const outputs = result["tofu/outputs"] as Record<string, unknown> | undefined;
@@ -148,10 +137,7 @@ export function outputValue(result: Opts, k: string): unknown {
 // scripts read them: private files under the profile directory, never in a
 // rendered template, never in a golden.
 export function persistClusterAccess(opts: Opts, result: Opts): void {
-  const kc = String(outputValue(result, "kubeconfig-b64") ?? "");
-  if (kc.length > 0) {
-    writePrivate(kubeconfigPath(opts), Buffer.from(kc, "base64").toString("utf8"));
-  }
+
   const urn = String(outputValue(result, "registry-urn") ?? "");
   const user = String(outputValue(result, "registry-username") ?? "");
   const pass = String(outputValue(result, "registry-password") ?? "");
@@ -163,14 +149,10 @@ export function persistClusterAccess(opts: Opts, result: Opts): void {
   }
 }
 
-export async function infrastructureStep(opts: Opts): Promise<Opts> {
+export async function registryStep(opts: Opts): Promise<Opts> {
   const dir = toolDir(opts, infrastructureTool);
-  const specs = [spec(template("infrastructure", "main.tf"), `${dir}/main.tf`,
+  const specs = [spec(template("registry", "main.tf"), `${dir}/main.tf`,
                       infrastructureData(opts))];
-  const versionErr = opts["red/event"] === "create" && !opts["red/dry-run"]
-    ? await vkeVersionError(opts)
-    : undefined;
-  if (versionErr) return { ...opts, "red/exit": 1, "red/err": versionErr };
   const result = await tofu.tofuWithSpec(opts, specs, {
     dir, env: credentialEnv(opts, "provider-compute"),
   });
@@ -317,8 +299,11 @@ export function desiredJson(opts: Opts): string {
 // credentials reach the scripts through the process environment or private
 // state files, so nothing in .colors/ or a golden ever holds one.
 export function deployData(opts: Opts): Opts {
+  const settings=managed_application_settings(opts,opts['colors-compute/managed']);
   return {
     ...opts,
+    "compute-load-balancer-annotations": JSON.stringify(Object.fromEntries(Object.entries(settings.load_balancer_annotations).sort(([a],[b])=>a.localeCompare(b)))),
+    "compute-pod-cidr": settings.pod_cidr,
     "allowed-model": validate.allowedModel(opts),
     "denied-claimed-model": validate.deniedClaimedModel(opts),
     // The escaped base domain for Traefik's HostSNIRegexp: only
@@ -364,6 +349,7 @@ export function deploySpecs(opts: Opts): Spec[] {
   return [
     ...deployFiles.map(([subpath, tdir]) =>
       spec(template(tdir, basename(subpath)), `${dir}/${subpath}`, data)),
+    ...Object.entries(managed_application_artifacts(opts,["managed-cleanup.sh"])).map(([name,content])=>rawSpec(`${dir}/${name}`,content)),
     rawSpec(`${dir}/desired.json`, desiredJson(data)),
     rawSpec(`${dir}/inventory.json`, inventory(data)),
   ];
@@ -476,12 +462,13 @@ export async function teardownStep(opts: Opts): Promise<Opts> {
     ...scaffold({ ...opts, "red/event": "create" }, deploySpecs(opts)),
     "red/event": "delete",
   };
-  if (!existsSync(kubeconfigPath(opts))) return { ...rendered, "red/exit": 0 };
+  if (opts["managed/already-destroyed"]) return { ...rendered, "red/exit": 0 };
+  if (!existsSync(kubeconfigPath(opts))) return { ...rendered, "red/exit": 1, "red/err":"managed cluster access unavailable" };
   const r = await runScript(rendered, "teardown.sh");
   // A cluster that stopped answering must not block the destroy that
   // removes it: teardown is best-effort, the tofu destroy is the
   // authority.
-  return { ...r, "red/exit": 0 };
+  return r;
 }
 
 // Remove the local per-profile access material after the infrastructure is

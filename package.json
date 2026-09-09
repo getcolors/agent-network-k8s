@@ -3,9 +3,27 @@
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
-  "exports": { ".": "./red/src/index.ts" },
-  "files": ["red/src", "red/resources"],
-  "peerDependencies": { "red": "*" },
-  "peerDependenciesMeta": { "red": { "optional": true } },
-  "scripts": { "test": "cd red && bun test && bun run typecheck", "typecheck": "cd red && bun run typecheck", "parity": "./scripts/parity.sh" }
+  "exports": {
+    ".": "./red/src/index.ts"
+  },
+  "files": [
+    "red/src",
+    "red/resources"
+  ],
+  "peerDependencies": {
+    "red": "*"
+  },
+  "peerDependenciesMeta": {
+    "red": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "test": "cd red && bun test && bun run typecheck",
+    "typecheck": "cd red && bun run typecheck",
+    "parity": "./scripts/parity.sh"
+  },
+  "dependencies": {
+    "colors-compute-red": "github:getcolors/colors-compute#09d13289c5ea8efc3e082475bf9d958f30d9f2e0"
+  }
 }

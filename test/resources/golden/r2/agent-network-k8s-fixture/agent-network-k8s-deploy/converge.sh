@@ -24,6 +24,12 @@ mkdir -p "$STATE"
 
 log() { echo "agent-network-k8s-converge: $*" >&2; }
 
+# Finish verification from an earlier teardown before creating replacements.
+if [[ -e $STATE/compute-cleanup.json || -L $STATE/compute-cleanup.json ]]; then
+  bash "$DIR/managed-cleanup.sh" "$STATE/compute-cleanup.json"
+  rm -- "$STATE/compute-cleanup.json"
+fi
+
 # Registry credentials arrive as a private state file written by the
 # infrastructure stage — never argv, never a rendered template.
 # shellcheck disable=SC1091

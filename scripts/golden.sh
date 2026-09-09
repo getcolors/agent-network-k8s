@@ -18,7 +18,7 @@ accept=0
 [[ ${1:-} == --accept ]] && accept=1
 
 status=0
-for backend in local r2; do
+for backend in s3 r2; do
   fixture="$tmp/$backend/colors.yml"
   mkdir -p "$tmp/$backend"
   sed "s#WORKDIR#$tmp/$backend/work#" "$root/test/fixtures/colors.yml" > "$fixture"

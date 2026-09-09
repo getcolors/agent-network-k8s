@@ -15,9 +15,9 @@ it is set.
 |---|---|
 | `profile` | This deployment's identity. Keys remote state as `<profile>/<stage>.tfstate` and names the cluster, node pool, load balancer and registry (Compute Name Standard; the registry name is the profile reduced to lowercase alphanumerics, the only characters Vultr accepts there). |
 | `workdir` | Where generated output lands. Conventionally `.colors`. The kubeconfig, launcher-side state files and lego's account state live under `<workdir>/<profile>/`. |
-| `provider-compute` | Must be `vultr`. |
+| `provider-compute` | Selected by the pinned colors-compute managed provider registry. The fixture uses `vultr`. Unsupported application capabilities are refused. |
 | `provider-dns` | Must be `cloudflare`. |
-| `provider-backend` | `local`, `s3` or `r2`. |
+| `provider-backend` | `s3` or `r2`, resolved by colors-compute. S3 uses ambient AWS credentials; R2 uses its two COLORS_PAR credentials. |
 | `compute-prevent-destroy` | Keep `true` in committed state. Destruction needs `COLORS_PAR_COMPUTE_PREVENT_DESTROY=false` for one run. |
 
 ## Agent Network
@@ -71,9 +71,9 @@ when a floating tag moves; pin tag@digest and bump deliberately.
 | Key | Meaning |
 |---|---|
 | `vultr-region` | Region for the cluster and the registry. |
-| `vultr-vke-version` | VKE control-plane version, `v<semver>+<build>`. Checked against the live supported list before anything is created. |
+| `vultr-vke-version` | VKE control-plane version, `v<semver>+<build>`. Checked against the live supported list before managed compute is created. |
 | `vultr-node-plan` | Plan for every node in the pool. |
-| `vultr-node-count` | Node count (1–16). Two carries the demo comfortably. |
+| `vultr-node-count` | Node count, a positive integer up to the library limit of 1000. Two carries the demo comfortably. |
 | `vultr-registry-plan` | Vultr Container Registry plan (e.g. `start_up`). |
 | `vultr-http-sources` | CIDRs admitted to the load balancer's 80/443. |
 | `vke-pod-cidr` | The pod CIDR VKE's Calico allocates from (conventionally `10.244.0.0/16`). Carried into the server's trusted-proxy range and the reverse proxy's PROXY-protocol trust; converge re-validates it against live pod addresses and fails loudly on mismatch. |
@@ -94,3 +94,16 @@ dashboard admin password (create-once Secrets), the proxy access token, the
 durable automation token (cluster Secrets, pipe-only capture), and the
 agent's one-off setup key (streamed over exec stdin into memory-backed
 storage, revoked after enrollment, never a Kubernetes Secret).
+
+## Library-owned compute settings
+
+`compute-http-sources` is the provider-neutral source-range key. It overrides
+the historical provider-specific HTTP source key. The library resolves provider
+version, region, size, name, pod ranges, and load-balancer annotations.
+The package retains application registry settings.
+
+Compute state is `<profile>/compute/managed-kubernetes.tfstate`; its ownership
+journal is `<profile>/compute/coordination.json`. Registry state is separate at
+`<profile>/agent-network-k8s-registry.tfstate`. Existing combined infrastructure state
+requires an explicit reviewed split. Managed kubeconfig is private and generated
+only during real execution. Build does not generate access credentials.

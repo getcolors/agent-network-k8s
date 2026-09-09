@@ -48,7 +48,7 @@ def test_budget_ceilings(fixture):
 
 def test_vke_version_shape(fixture):
     assert validate.state_errors({**fixture, "vultr-vke-version": "v1.34.0+3"}) == []
-    for bad in ("1.35.2+1", "v1.35.2", "v1.35+1", "latest"):
+    for bad in ("1.35.2+1", "v1.35+1", "latest"):
         assert validate.state_errors({**fixture, "vultr-vke-version": bad}), bad
 
 
@@ -68,7 +68,7 @@ def test_zone_derivation(fixture):
 def test_secret_requirements(fixture):
     # Create needs the providers, the backend and the Anthropic key.
     errors = validate.secret_errors({**fixture, "provider-backend": "r2"}, "create")
-    for v in ("COLORS_PAR_VULTR_API_KEY", "COLORS_PAR_CLOUDFLARE_API_TOKEN",
+    for v in ("COLORS_PAR_CLOUDFLARE_API_TOKEN",
               "COLORS_PAR_ANTHROPIC_API_KEY", "COLORS_PAR_R2_ACCESS_KEY_ID"):
         assert any(v in e for e in errors), v
     # Delete never demands the Anthropic key.

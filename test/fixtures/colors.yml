@@ -20,7 +20,7 @@ workdir: WORKDIR
 
 provider-compute: vultr
 provider-dns: cloudflare
-provider-backend: local
+provider-backend: r2
 
 # Preserve this guard in committed desired state. Destruction requires an
 # explicitly authorized one-run override; never edit this flag to bypass it.
@@ -106,3 +106,6 @@ vke-pod-cidr: 10.244.0.0/16
 
 r2-bucket: tofu-state-example
 r2-endpoint: https://example.eu.r2.cloudflarestorage.com
+
+s3-bucket: tofu-state-example
+s3-region: us-east-1

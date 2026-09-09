@@ -1,80 +1,71 @@
 ---
 name: package-agent-network-k8s-blue
-description: Provision and manage a NetBird Agent Network demo on Vultr Kubernetes Engine from declarative desired state — a keyless, policy-gated LLM endpoint and a two-pod application, the NetBird client in netstack/SOCKS5 mode plus a network-isolated agent pod running headless Claude Code. Use when asked to deploy, converge, inspect or delete an Agent Network on Kubernetes, a keyless LLM gateway demo on VKE, or an isolated AI-agent sandbox with identity-based model access and NetworkPolicy-enforced egress.
+description: Deploy, converge, inspect, or delete a NetBird Agent Network demo on Vultr Kubernetes Engine. Use for a keyless LLM gateway or an isolated AI agent on managed Kubernetes, with model allowlists, budget limits, and NetworkPolicy checks.
 ---
 
-# NetBird Agent Network on Vultr Kubernetes Engine
+# NetBird Agent Network on managed Kubernetes
 
-A Blue workflow that turns one `colors.yml` into a running Agent Network
-demo on a managed Kubernetes cluster: OpenTofu for the VKE cluster and the
-deployment-owned container registry plus two Cloudflare records (the base
-name and its wildcard); kubectl for the gateway (Traefik behind a TCP-mode
-Vultr Load Balancer, the combined `netbird-server` with its datastore on a
-CSI volume, the dashboard in agent-network-only mode, the NetBird reverse
-proxy in private mode), a launcher-side control-plane bootstrap, an
-in-cluster kaniko build of the agent image, and the **two-pod application**:
-the NetBird client in netstack/SOCKS5 mode — userspace WireGuard, no TUN, no
-capabilities — and the isolated agent running headless Claude Code.
+This Blue package configures a NetBird gateway and a two-pod application.
+The NetBird client runs in netstack/SOCKS5 mode without TUN or capabilities.
+The isolated agent runs Claude Code. Its NetworkPolicy permits only the SOCKS5
+listener, with no DNS or ServiceAccount token. Acceptance tests direct egress
+and connections through SOCKS5, and verifies tunnel identity, model restrictions,
+budget limits, and access-log attribution.
 
-The demo's claim: the agent pod has **no network egress but the SOCKS5
-listener** — default-deny NetworkPolicy with a single allow, in a
-`restricted` Pod Security namespace, with no ServiceAccount token and no DNS
-— and its only road to an LLM is the keyless agent-network endpoint over the
-WireGuard tunnel, where every request carries the peer's identity, passes
-the model allowlist and the budget caps, and is metered. Convergence proves
-the claim from both sides: raw probes around the proxy AND CONNECT probes
-through it (NetworkPolicy cannot constrain what a CONNECT names, so the
-"only the overlay is dialable" property is probed on every converge, never
-assumed).
-
-## Verbs
+Use one `colors.yml` for non-secret desired state. The hostname and its wildcard
+must be free in the Cloudflare zone. Read [configuration](references/configuration.md)
+for application settings and credentials. Never export `COLORS_PAR_PROFILE`.
 
 ```sh
-./blue build              # render .colors/<profile>/ — no provider calls, no credentials
-./blue create --dry-run   # walk the workflow, skip every side effect
-./blue create             # converge for real
-./blue delete             # guarded; needs a one-run override
-./blue status             # cluster, certificate, endpoint, tunnel, usage
-./blue kubectl -- get pods -A   # kubectl with this deployment's kubeconfig
+./blue build
+./blue create --dry-run
+./blue create
+./blue delete
+./blue status
+./blue kubectl -- get pods -A
 ```
 
-Exit code 2 is validation or usage failure and lists every problem at once.
-The launcher walks up from the working directory to find `colors.yml`.
+`build` renders without credentials or provider calls. `create --dry-run` skips
+side effects. Exit code 2 reports validation or usage failures. The launcher
+finds `colors.yml` by walking up from the current directory.
 
-## Before you converge
+## Compute dependency and state
 
-- The hostname and its wildcard must be free in the Cloudflare zone. The DNS
-  stage creates both and never adopts a foreign record.
-- Five credentials must be set in `.envrc.private`; see
-  `references/configuration.md`. Never export `COLORS_PAR_PROFILE`.
-- A deliberately fake `COLORS_PAR_ANTHROPIC_API_KEY` is a supported mode: the
-  acceptance gates then expect Anthropic's own 401 relayed through the proxy,
-  which proves everything NetBird owns with nothing billable. A real key
-  upgrades the same gates to require completions; swapping is an
-  `.envrc.private` edit and a re-converge.
-- `vultr-vke-version` is checked against VKE's live supported list before
-  anything is created; the error names the versions on offer.
+The pinned `colors-compute` library owns managed compute, provider validation,
+version preflight, remote state, kubeconfig handling, and provider cleanup checks.
+A compatible provider addition requires only a library pin update in this package.
+Managed control planes use their provider API, with no SSH keys or VM fan-out.
 
-## What create does
+The library stores compute at `<profile>/compute/managed-kubernetes.tfstate`
+and ownership at `<profile>/compute/coordination.json`. The package stores registry
+state at `<profile>/agent-network-k8s-registry.tfstate`. Use R2 or S3.
+R2 requires `COLORS_PAR_R2_ACCESS_KEY_ID` and `COLORS_PAR_R2_SECRET_ACCESS_KEY`.
+S3 uses the ambient AWS credential chain.
 
-infrastructure (VKE + registry) → deploy (namespaces, create-once secrets,
-kaniko build, gateway, proxy token, LB) → dns (base + wildcard, unproxied) →
-certificate (lego DNS-01, both SANs, launcher-side; then the edge and proxy
-readiness deliberately deferred until the Secret exists) → bootstrap
-(headless: setup-PAT exchange, endpoint minted by the settings POST,
-provider claiming two models, guardrail allowing one, per-group caps on the
-agents peer group, account-wide ceiling) → agent (the two pods; one-off
-setup key streamed over exec stdin into memory-backed storage, revoked after
-enrollment) → acceptance (isolation outer and inner, tunnel, keyless call,
-both denial classes, external pre-identity 403, attribution, limits read
-back, credential hygiene, and — once — a bounded disruption suite including
-a node drain).
+Existing combined `agent-network-k8s-infrastructure.tfstate` must be explicitly
+split and reviewed before using the new lifecycle. Execution refuses that legacy
+state. It also refuses unreadable ownership and an active operation lock.
 
-## Recovery
+## Convergence and deletion
 
-Disposable by design: no backups. Recovery is a guarded `delete`
-(`COLORS_PAR_COMPUTE_PREVENT_DESTROY=false` for one run) followed by
-`create`, which regenerates the endpoint hostname and every peer identity;
-anything that memorized the old endpoint breaks. The dashboard admin
-password: `./blue kubectl -- -n agent-network-gateway get secret
-an-admin-password -o jsonpath='{.data.value}' | base64 -d`.
+Create converges managed compute, then the application registry. It deploys
+namespaces, persistent secrets, the kaniko image build, the gateway, and the
+load balancer. DNS precedes the wildcard certificate, which covers the base name
+and wildcard. Bootstrap configures identities, model allowlists, and budgets.
+The agent enrolls using a one-off key streamed into memory-backed storage;
+the key is revoked after enrollment. Acceptance checks isolation and includes
+a bounded disruption suite with a node drain.
+
+The package creates a deployment-owned Vultr Container Registry.
+
+Delete reloads managed access and withdraws Kubernetes workloads, volumes, and
+the load-balancer Service. Provider checks must confirm cleanup before registry
+and compute destruction. Failed commands or uncertain cleanup stop deletion.
+Keep `compute-prevent-destroy: true` in committed desired state. An intended
+delete uses `COLORS_PAR_COMPUTE_PREVENT_DESTROY=false` for that run.
+
+There are no backups. Delete followed by create regenerates peer identities and
+the endpoint hostname. A deliberately fake `COLORS_PAR_ANTHROPIC_API_KEY` is
+supported; acceptance then requires the relayed upstream 401. A real key requires
+successful completions. Application secrets otherwise remain in cluster Secrets
+or NetBird's encrypted store, never in rendered templates or the agent pod.

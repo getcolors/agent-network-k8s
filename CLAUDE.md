@@ -111,7 +111,7 @@ The agent pod can reach exactly one address, and the LLM only through it:
 
 ```sh
 cd green && bb test           # validation, tools, workflow
-cd green && bb golden         # two backends (local, r2), byte for byte
+cd green && bb golden         # two backends (s3, r2), byte for byte
 cd green && bb golden:accept  # after an intended change — read the diff first
 cd red && bun test && bun run typecheck
 cd blue && uv sync && uv run pytest
@@ -133,16 +133,21 @@ read `.colors/`, and never read `.envrc.private`.
 
 ## Coupling
 
-The package pins only the SDKs — green transitively via `green/deps.edn`,
-red and blue inside their payloads (`red/package.json` mirrors the red pin
-for the checkout) — like `k8s`, its Vultr templates and provider table are
-its own; there is no ONCE pin. Working-tree overrides:
-`AGENT_NETWORK_K8S_LIB_ROOT` (this repository's root), `GREEN_LIB_ROOT`.
-`green/green`, `red/red`, and `blue/blue` are symlinks to the skill
-payloads; in a deployment each is a **copy** that must be refreshed after
-`npx skills update -p`. After committing and pushing package code, run
-`bb pin` (in `green/`) — it stamps all three payloads — commit the launcher
-stamps, and push again. Do not invent or hand-edit any pin.
+All three implementations pin colors-compute for managed Kubernetes, remote
+state, provider settings, private kubeconfig, and provider cleanup artifacts.
+Package code owns registry resources, DNS, Kubernetes workloads, and acceptance.
+Create runs compute, registry, and application stages in that order. Delete
+loads recorded access, withdraws application resources, destroys registry
+resources, then destroys compute. Unverified cleanup blocks destruction.
+
+Compute state is `<profile>/compute/managed-kubernetes.tfstate`; ownership uses
+`<profile>/compute/coordination.json`. Registry state is separate. Existing
+combined infrastructure state needs an explicit reviewed split. No legacy state
+is adopted automatically.
+
+Use `AGENT_NETWORK_K8S_LIB_ROOT` for working-tree package development.
+After tests pass, commit and push source, run `bb pin` from `green/`, then commit
+and push the launcher stamps. Installed launchers are copies and require refresh.
 
 ## Documentation
 

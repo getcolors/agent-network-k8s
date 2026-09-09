@@ -65,7 +65,7 @@ spec:
             # NetworkPolicy on this pod is what narrows the actual sources
             # to Traefik.
             - {name: NB_PROXY_PROXY_PROTOCOL, value: "true"}
-            - {name: NB_PROXY_TRUSTED_PROXIES, value: "<{ vke-pod-cidr }>"}
+            - {name: NB_PROXY_TRUSTED_PROXIES, value: "<{ compute-pod-cidr }>"}
             - {name: NB_PROXY_PRIVATE, value: "true"}
           ports:
             - {name: tls, containerPort: 8443}

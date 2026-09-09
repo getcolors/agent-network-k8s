@@ -65,7 +65,7 @@ describe("deploy rendering", () => {
     readFileSync(written.find((p) => p.endsWith(suffix))!, "utf8");
 
   test("every deploy file renders", () => {
-    expect(written.length).toBe(tools.deployFiles.length + 2);
+    expect(written.length).toBe(tools.deployFiles.length + 3);
   });
   test("the host reaches the scripts and manifests", () => {
     expect(slurpTarget("bootstrap.sh")).toContain("agent-network-k8s.example.com");
@@ -173,7 +173,7 @@ describe("validate", () => {
   });
   test("vke version shape", () => {
     expect(validate.stateErrors({ ...fixture(), "vultr-vke-version": "v1.34.0+3" })).toEqual([]);
-    for (const bad of ["1.35.2+1", "v1.35.2", "v1.35+1", "latest"]) {
+    for (const bad of ["1.35.2+1", "v1.35+1", "latest"]) {
       expect(validate.stateErrors({ ...fixture(), "vultr-vke-version": bad }).length)
         .toBeGreaterThan(0);
     }
@@ -226,7 +226,7 @@ function chain(event: string): string[] {
 describe("workflow", () => {
   test("create ordering: cluster → workloads → dns → certificate → bootstrap → agent → gates", () => {
     expect(chain("create")).toEqual([
-      "agent-network-k8s/infrastructure", "agent-network-k8s/deploy",
+      "agent-network-k8s/infrastructure", "agent-network-k8s/registry", "agent-network-k8s/deploy",
       "agent-network-k8s/dns", "agent-network-k8s/certificate",
       "agent-network-k8s/bootstrap", "agent-network-k8s/agent",
       "agent-network-k8s/acceptance",
@@ -234,7 +234,7 @@ describe("workflow", () => {
   });
   test("delete ordering: in-cluster teardown precedes the infrastructure destroy", () => {
     expect(chain("delete")).toEqual([
-      "agent-network-k8s/teardown", "agent-network-k8s/dns",
+      "agent-network-k8s/load-managed", "agent-network-k8s/teardown", "agent-network-k8s/dns", "agent-network-k8s/registry",
       "agent-network-k8s/infrastructure", "agent-network-k8s/cleanup",
     ]);
   });
@@ -255,7 +255,7 @@ describe("workflow", () => {
     const out = await startStep(opts, {});
     expect(out["red/exit"]).toBe(2);
     expect(String(out["red/err"])).toContain(":agent-network-host");
-    expect(String(out["red/err"])).toContain(":vultr-vke-version");
+    expect(String(out["red/err"])).toContain("missing managed Kubernetes settings");
   });
   test("the profile guard refuses the overlay", async () => {
     const out = await startStep({ ...fixture(), "red/event": "build" },

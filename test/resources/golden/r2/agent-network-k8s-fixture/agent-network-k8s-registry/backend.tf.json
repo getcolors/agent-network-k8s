@@ -6,7 +6,7 @@
         "endpoints" : {
           "s3" : "https://example.eu.r2.cloudflarestorage.com"
         },
-        "key" : "agent-network-k8s-fixture/agent-network-k8s-infrastructure.tfstate",
+        "key" : "agent-network-k8s-fixture/agent-network-k8s-registry.tfstate",
         "region" : "auto",
         "skip_credentials_validation" : true,
         "skip_metadata_api_check" : true,

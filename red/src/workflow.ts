@@ -13,7 +13,7 @@ import * as validate from "./validate.ts";
 export const defaults: Opts = {
   "provider-compute": "vultr",
   "provider-dns": "cloudflare",
-  "provider-backend": "local",
+  "provider-backend": "r2",
   "compute-prevent-destroy": true,
   workdir: ".colors",
 };
@@ -51,9 +51,11 @@ export function wireFn(step: string, runOpts: Opts): WireDecl | undefined {
     // them in the account. Local access material goes last — the kubeconfig
     // is needed by the teardown and dead only after the destroy.
     const graph: Record<string, WireDecl> = {
-      "agent-network-k8s/start": [startStep, "agent-network-k8s/teardown"],
+      "agent-network-k8s/start": [startStep, "agent-network-k8s/load-managed"],
+      "agent-network-k8s/load-managed": [tools.loadManagedStep, "agent-network-k8s/teardown"],
       "agent-network-k8s/teardown": [tools.teardownStep, "agent-network-k8s/dns"],
-      "agent-network-k8s/dns": [tools.dnsStep, "agent-network-k8s/infrastructure"],
+      "agent-network-k8s/dns": [tools.dnsStep, "agent-network-k8s/registry"],
+      "agent-network-k8s/registry": [tools.registryStep, "agent-network-k8s/infrastructure"],
       "agent-network-k8s/infrastructure": [tools.infrastructureStep, "agent-network-k8s/cleanup"],
       "agent-network-k8s/cleanup": [tools.cleanupStep],
     };
@@ -66,7 +68,8 @@ export function wireFn(step: string, runOpts: Opts): WireDecl | undefined {
   // the two-pod application, and the gates.
   const graph: Record<string, WireDecl> = {
     "agent-network-k8s/start": [startStep, "agent-network-k8s/infrastructure"],
-    "agent-network-k8s/infrastructure": [tools.infrastructureStep, "agent-network-k8s/deploy"],
+    "agent-network-k8s/infrastructure": [tools.infrastructureStep, "agent-network-k8s/registry"],
+    "agent-network-k8s/registry": [tools.registryStep, "agent-network-k8s/deploy"],
     "agent-network-k8s/deploy": [tools.deployStep, "agent-network-k8s/dns"],
     "agent-network-k8s/dns": [tools.dnsStep, "agent-network-k8s/certificate"],
     "agent-network-k8s/certificate": [tools.certificateStep, "agent-network-k8s/bootstrap"],
@@ -85,6 +88,7 @@ export function backendAdvice(tool: string) {
 }
 
 export const sideEffectingSteps = [
+  "agent-network-k8s/registry", "agent-network-k8s/load-managed",
   "agent-network-k8s/infrastructure", "agent-network-k8s/deploy",
   "agent-network-k8s/dns", "agent-network-k8s/certificate",
   "agent-network-k8s/bootstrap", "agent-network-k8s/agent",
@@ -94,7 +98,7 @@ export const sideEffectingSteps = [
 
 function create() {
   let wf = workflow({ start: "agent-network-k8s/start", wireFn });
-  wf = adviceAdd(wf, "agent-network-k8s/infrastructure", "before",
+  wf = adviceAdd(wf, "agent-network-k8s/registry", "before",
     "io.github.getcolors.agent-network-k8s.workflow/backend",
     backendAdvice(tools.infrastructureTool));
   wf = adviceAdd(wf, "agent-network-k8s/dns", "before",

@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
-# Ordered in-cluster teardown before the infrastructure destroy. The CSI
-# volumes and the CCM-created load balancer are Kubernetes-managed and
-# invisible to the infrastructure state; destroying the cluster first would
-# orphan them in the account. Order: workloads → PVCs (waiting for the
-# volumes to leave) → the LB Service (waiting for the LB to leave) →
-# namespaces. Best-effort throughout: a cluster that stopped answering must
-# not block the destroy that removes it.
-set -uo pipefail
+# Delete Kubernetes-owned resources before destroying their control plane.
+# Any failed command or unverified provider cleanup blocks compute destruction.
+set -euo pipefail
 
 GW=agent-network-gateway
 AG=agent-network-agent
@@ -15,83 +10,60 @@ BLD=agent-network-build
 log() { echo "agent-network-k8s-teardown: $*" >&2; }
 
 if ! kubectl version --request-timeout=15s >/dev/null 2>&1; then
-  log "cluster does not answer; leaving teardown to the infrastructure destroy"
-  exit 0
+  log "cluster access failed; refusing compute destruction"
+  exit 1
 fi
+
+bash "$(dirname "$0")/managed-cleanup.sh" check-credentials
 
 # Captured BEFORE anything is deleted: the CSI volume handles and the LB
 # address are what the Vultr API is asked to confirm absent afterwards —
 # Kubernetes objects disappearing proves nothing about the paid resources
 # behind them.
-volume_ids=$(kubectl get pv -o jsonpath='{range .items[*]}{.spec.csi.volumeHandle}{"\n"}{end}' 2>/dev/null | grep . || true)
-lb_ip=$(kubectl -n "$GW" get svc traefik -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+# Retain the original resource identities across retries after Kubernetes
+# objects disappear. The provider must confirm these same identities absent.
+[[ -n ${STATE_DIR:-} && ! -L $STATE_DIR ]] || { log "cleanup state directory unavailable"; exit 1; }
+(umask 077; mkdir -p -- "$STATE_DIR")
+snapshot="$STATE_DIR/compute-cleanup.json"
+[[ ! -L $snapshot ]] || { log "invalid cleanup snapshot"; exit 1; }
+volumes=$(kubectl get pv -o json | jq -ce 'if (.items | type) == "array" then [.items[].spec.csi.volumeHandle | select(. != null)] else error("invalid volumes") end')
+service=$(kubectl -n "$GW" get svc traefik --ignore-not-found -o json)
+[[ -n $service ]] || service='{}'
+lb_ip=$(jq -r '.status.loadBalancer.ingress[0].ip // ""' <<<"$service")
+if [[ ! -e $snapshot ]]; then
+  temporary=$(umask 077; mktemp "$STATE_DIR/.compute-cleanup.XXXXXX")
+  jq -n --argjson volumes "$volumes" --arg lb_ip "$lb_ip" '{volumes:$volumes,lb_ip:$lb_ip}' > "$temporary"
+  mv "$temporary" "$snapshot"
+fi
+jq -e 'type == "object" and (.volumes | type) == "array" and all(.volumes[]; type == "string") and (.lb_ip | type) == "string"' "$snapshot" >/dev/null
+# A retry must not silently omit resources created since its snapshot.
+jq -e --argjson current "$volumes" --arg current_ip "$lb_ip"   '($current - .volumes | length) == 0 and ($current_ip == "" or $current_ip == .lb_ip)'   "$snapshot" >/dev/null || { log "compute resources changed during cleanup; refusing destruction"; exit 1; }
+volume_ids=$(jq -r '.volumes[]' "$snapshot")
+lb_ip=$(jq -r '.lb_ip' "$snapshot")
 
 log "deleting application and build namespaces"
-kubectl delete namespace "$AG" "$BLD" --ignore-not-found --timeout=300s || true
+kubectl delete namespace "$AG" "$BLD" --ignore-not-found --timeout=300s
 
 log "deleting gateway workloads"
-kubectl -n "$GW" delete statefulset --all --ignore-not-found --timeout=300s || true
-kubectl -n "$GW" delete deployment --all --ignore-not-found --timeout=300s || true
+kubectl -n "$GW" delete statefulset --all --ignore-not-found --timeout=300s
+kubectl -n "$GW" delete deployment --all --ignore-not-found --timeout=300s
 
 log "deleting PVCs and waiting for the CSI volumes to leave"
-kubectl -n "$GW" delete pvc --all --ignore-not-found --timeout=300s || true
+kubectl -n "$GW" delete pvc --all --ignore-not-found --timeout=300s
 for _ in $(seq 1 60); do
   pvs=$(kubectl get pv --no-headers 2>/dev/null | wc -l)
   [[ ${pvs:-0} -eq 0 ]] && break
   sleep 10
 done
 pvs=$(kubectl get pv --no-headers 2>/dev/null | wc -l)
-[[ ${pvs:-0} -eq 0 ]] || log "WARNING: $pvs PersistentVolumes remain; check for orphaned block volumes after the destroy"
+[[ ${pvs:-0} -eq 0 ]] || { log "PersistentVolumes remain; refusing compute destruction"; exit 1; }
 
 log "deleting the load balancer Service and waiting for the LB to leave"
-kubectl -n "$GW" delete service traefik --ignore-not-found --timeout=120s || true
-for _ in $(seq 1 30); do
-  kubectl -n "$GW" get service traefik >/dev/null 2>&1 || break
-  sleep 10
-done
+kubectl -n "$GW" delete service traefik --ignore-not-found --timeout=120s
 
 log "deleting the gateway namespace"
-kubectl delete namespace "$GW" --ignore-not-found --timeout=300s || true
+kubectl delete namespace "$GW" --ignore-not-found --timeout=300s
 
-# The provider is the authority on what still bills. Best-effort (the tofu
-# destroy that follows removes the cluster either way), but leftovers are
-# surfaced loudly rather than assumed gone.
-# An API failure is NOT absence: only a successful listing that lacks the
-# resource counts as gone; anything else is surfaced as unverified.
-vultr_api() { curl -fsS -H "Authorization: Bearer ${COLORS_PAR_VULTR_API_KEY:-}" "https://api.vultr.com/v2$1"; }
-if [[ -n ${COLORS_PAR_VULTR_API_KEY:-} ]]; then
-  if [[ -n ${volume_ids:-} ]]; then
-    verdict="unverified"
-    for _ in $(seq 1 30); do
-      if live=$(vultr_api "/blocks?per_page=500" 2>/dev/null | jq -r '.blocks[].id' 2>/dev/null); then
-        leftover=$(comm -12 <(sort <<<"$volume_ids") <(sort <<<"$live") | grep . || true)
-        if [[ -z $leftover ]]; then verdict="absent"; break; else verdict="present"; fi
-      fi
-      sleep 10
-    done
-    case $verdict in
-      absent) log "block volumes confirmed absent at the provider" ;;
-      present) log "WARNING: block volumes still in the account: $leftover — delete them manually" ;;
-      *) log "WARNING: could not verify block-volume deletion against the Vultr API — check manually" ;;
-    esac
-  fi
-  if [[ -n ${lb_ip:-} ]]; then
-    verdict="unverified"
-    for _ in $(seq 1 30); do
-      if lbs=$(vultr_api "/load-balancers?per_page=500" 2>/dev/null); then
-        if jq -e --arg ip "$lb_ip" '.load_balancers[] | select(.ipv4==$ip)' <<<"$lbs" >/dev/null 2>&1
-        then verdict="present"
-        else verdict="absent"; break
-        fi
-      fi
-      sleep 10
-    done
-    case $verdict in
-      absent) log "load balancer confirmed absent at the provider" ;;
-      present) log "WARNING: the load balancer at $lb_ip is still in the account — delete it manually" ;;
-      *) log "WARNING: could not verify load-balancer deletion against the Vultr API — check manually" ;;
-    esac
-  fi
-fi
+bash "$(dirname "$0")/managed-cleanup.sh" "$snapshot"
 
 log "teardown complete"

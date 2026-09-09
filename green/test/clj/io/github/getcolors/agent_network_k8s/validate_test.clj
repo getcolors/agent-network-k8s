@@ -50,7 +50,7 @@
 
 (deftest vke-version-shape
   (is (= [] (validate/state-errors (assoc (fixture) :vultr-vke-version "v1.34.0+3"))))
-  (doseq [bad ["1.35.2+1" "v1.35.2" "v1.35+1" "latest"]]
+  (doseq [bad ["1.35.2+1" "v1.35+1" "latest"]]
     (is (seq (validate/state-errors (assoc (fixture) :vultr-vke-version bad))) bad)))
 
 (deftest naming

@@ -13,28 +13,23 @@ from __future__ import annotations
 import re
 
 from blue.cli import par_name
+from colors_compute.contract import registry
+from colors_compute.managed import managed_application_settings, managed_application_artifacts, managed_errors, managed_name
 
 from . import utils
 
 profile_par = par_name("profile")
 
 providers = {
-    "provider-compute": {
+    "provider-registry": {
         "vultr": {"secrets": ["vultr-api-key"],
                   "tofu_env": {"vultr-api-key": "VULTR_API_KEY"}},
     },
     "provider-dns": {
         "cloudflare": {"secrets": ["cloudflare-api-token"], "tofu_env": {}},
     },
-    "provider-backend": {
-        "local": {"secrets": [], "tofu_env": {}},
-        "s3": {"secrets": ["s3-access-key-id", "s3-secret-access-key"],
-               "tofu_env": {"s3-access-key-id": "AWS_ACCESS_KEY_ID",
-                            "s3-secret-access-key": "AWS_SECRET_ACCESS_KEY"}},
-        "r2": {"secrets": ["r2-access-key-id", "r2-secret-access-key"],
-               "tofu_env": {"r2-access-key-id": "AWS_ACCESS_KEY_ID",
-                            "r2-secret-access-key": "AWS_SECRET_ACCESS_KEY"}},
-    },
+    "provider-backend": {name: {"secrets": entry["secrets"], "tofu_env": entry["tofu-env"]}
+                         for name, entry in registry()["backend"].items()},
 }
 
 # Every key desired state must carry. There is no `vultr-name`: the Compute
@@ -57,8 +52,8 @@ required = [
     "agent-network-claude-code-version", "agent-network-privoxy-version",
     "agent-network-gost-version", "agent-network-gost-sha256",
     "agent-network-lego-version",
-    "vultr-region", "vultr-vke-version", "vultr-node-plan", "vultr-node-count",
-    "vultr-registry-plan", "vultr-http-sources", "vke-pod-cidr",
+    "vultr-region",
+    "vultr-registry-plan",
 ]
 
 image_keys = [
@@ -96,14 +91,10 @@ def placeholder(v) -> bool:
 
 
 def compute_name(opts: dict) -> str:
-    """What this deployment calls its cluster. Every label — the node pool's,
-    the registry's (lowercased, non-alphanumerics stripped: Vultr registry
-    names accept nothing else) — derives from this and never from the raw
-    override key or a second copy of the profile (§3)."""
-    override = opts.get("vultr-name")
-    if placeholder(override):
-        return str(opts.get("profile"))
-    return str(override).strip()
+    try:
+        return managed_name(opts)
+    except ValueError:
+        return str(opts.get('profile') or '')
 
 
 def registry_name(opts: dict) -> str:
@@ -184,17 +175,30 @@ def _entry(opts: dict, slot: str) -> dict | None:
     return providers.get(slot, {}).get(str(opts.get(slot)))
 
 
+def managed_application_errors(opts):
+    if managed_errors(opts):
+        return []
+    try:
+        settings = managed_application_settings(opts)
+        if not settings.get('pod_cidr'):
+            return [':compute-pod-cidr is required']
+        managed_application_artifacts(opts, ['managed-cleanup.sh'])
+        return []
+    except ValueError as error:
+        return [str(error)]
+
+
 def state_errors(opts: dict) -> list[str]:
     errors: list[str] = []
     for k in required:
         if missing(opts.get(k)):
             errors.append(f":{k} is required")
-    if opts.get("provider-compute") != "vultr":
-        errors.append(":provider-compute must be vultr")
+    errors.extend(managed_errors(opts))
+    errors.extend(managed_application_errors(opts))
     if opts.get("provider-dns") != "cloudflare":
         errors.append(":provider-dns must be cloudflare")
-    if opts.get("provider-backend") not in ("local", "s3", "r2"):
-        errors.append(":provider-backend must be local, s3, or r2")
+    if opts.get("provider-backend") not in registry()["backend"]:
+        errors.append(":provider-backend must be s3 or r2")
     if not isinstance(opts.get("compute-prevent-destroy"), bool):
         errors.append(":compute-prevent-destroy must be true or false")
     if (not missing(opts.get("agent-network-host"))
@@ -228,17 +232,6 @@ def state_errors(opts: dict) -> list[str]:
     if not (missing(opts.get("agent-network-gost-sha256"))
             or _sha256_re.fullmatch(str(opts.get("agent-network-gost-sha256")))):
         errors.append(":agent-network-gost-sha256 must be the 64-hex sha256 of the release tarball")
-    if not (missing(opts.get("vultr-vke-version"))
-            or _vke_version_re.fullmatch(str(opts.get("vultr-vke-version")))):
-        errors.append(":vultr-vke-version must look like v1.35.2+1")
-    node_count = opts.get("vultr-node-count")
-    if not (missing(node_count)
-            or (isinstance(node_count, int) and not isinstance(node_count, bool)
-                and 1 <= node_count <= 16)):
-        errors.append(":vultr-node-count must be an integer between 1 and 16")
-    if not (missing(opts.get("vke-pod-cidr"))
-            or _cidr_re.fullmatch(str(opts.get("vke-pod-cidr")))):
-        errors.append(":vke-pod-cidr must be a CIDR block")
     if not (missing(opts.get("agent-network-log-level"))
             or str(opts.get("agent-network-log-level")) in ("error", "warn", "info", "debug")):
         errors.append(":agent-network-log-level must be error, warn, info, or debug")
@@ -271,16 +264,8 @@ def state_errors(opts: dict) -> list[str]:
     if any(not missing(v) for v in (opts.get("agent-network-provider-models"),
                                     opts.get("agent-network-allowed-models"))):
         errors.extend(model_errors(opts))
-    srcs = opts.get("vultr-http-sources")
-    if (not missing(srcs)
-            and (not isinstance(srcs, (list, tuple)) or not srcs
-                 or any(not _cidr_re.fullmatch(str(s)) for s in srcs))):
-        errors.append(":vultr-http-sources must be a non-empty list of IPv4 CIDRs")
     # The override is validated against the provider's rules rather than
     # passed through unread (Compute Name Standard §2).
-    if not (placeholder(opts.get("vultr-name"))
-            or _vultr_name_re.fullmatch(str(opts.get("vultr-name")).strip())):
-        errors.append(":vultr-name must be letters, digits, dot, dash or underscore")
     return errors
 
 
@@ -290,7 +275,7 @@ def backend_secrets(opts: dict) -> list[str]:
 
 
 # What talking to the providers needs, on any real event.
-provider_secrets = ["vultr-api-key", "cloudflare-api-token"]
+provider_secrets = ["cloudflare-api-token"]
 
 # What converging the cluster needs, and therefore only a create.
 #
@@ -321,7 +306,7 @@ def secret_errors(opts: dict, event: str) -> list[str]:
 
 
 def tofu_env(opts: dict, slot: str) -> dict[str, str]:
-    if slot == "provider-compute":
+    if slot == "provider-registry":
         return {"vultr-api-key": "VULTR_API_KEY"}
     if slot == "provider-dns":
         return {"cloudflare-api-token": "CLOUDFLARE_API_TOKEN"}

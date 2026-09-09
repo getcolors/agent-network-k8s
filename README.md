@@ -33,6 +33,13 @@ an outside-the-overlay probe that must draw the bare pre-identity 403, and a
 bounded disruption suite (pod deletes, component restarts, a node drain)
 after which the whole claim is re-probed.
 
+Compute is supplied by the pinned [colors-compute library](https://github.com/getcolors/colors-compute).
+It owns provider selection, managed state, conditional ownership, kubeconfig,
+and provider cleanup checks. Application registry and DNS stages remain here.
+R2 and S3 are the supported state backends; S3 uses ambient AWS credentials.
+Combined legacy infrastructure state requires a reviewed split before using
+this lifecycle. Build and schema checks do not prove a live migration.
+
 ## Use
 
 ```sh

@@ -1,5 +1,6 @@
 (ns io.github.getcolors.agent-network-k8s.tools
   (:require [cheshire.core :as json]
+            [io.github.getcolors.compute-managed :as managed]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [green.cli :as green-cli]
@@ -10,6 +11,7 @@
             [io.github.getcolors.agent-network-k8s.validate :as validate]))
 
 (def infrastructure-tool "agent-network-k8s-infrastructure")
+(def registry-tool "agent-network-k8s-registry")
 (def dns-tool "agent-network-k8s-dns")
 (def deploy-tool "agent-network-k8s-deploy")
 (def root "io.github.getcolors.agent-network-k8s.tools")
@@ -76,24 +78,6 @@
          :compute-name (validate/compute-name opts)
          :registry-name (validate/registry-name opts)))
 
-(defn vke-version-error
-  "Why the pinned VKE version cannot be created, or nil. VKE retires old
-  minors, so the pin is checked against the live supported list while failing
-  is still free — a tofu apply that dies half-way leaves a cluster to clean
-  up, this check leaves nothing."
-  [opts]
-  (let [{:keys [exit out]} (process/run
-                            ["curl" "-fsS" "-H" (str "Authorization: Bearer " (:vultr-api-key opts))
-                             "https://api.vultr.com/v2/kubernetes/versions"]
-                            {})]
-    (when (zero? exit)
-      (let [versions (get (json/parse-string out) "versions")]
-        (when (and (seq versions)
-                   (not (some #{(str (:vultr-vke-version opts))} versions)))
-          (str "vultr-vke-version " (:vultr-vke-version opts)
-               " is not offered by VKE; currently supported: "
-               (str/join ", " versions)))))))
-
 (defn output-params [result]
   (some-> (get-in result [:tofu/outputs :params]) clojure.walk/keywordize-keys))
 
@@ -105,9 +89,6 @@
   scripts read them: private files under the profile directory, never in a
   rendered template, never in a golden."
   [opts result]
-  (when-let [kc (not-empty (str (output-value result :kubeconfig-b64)))]
-    (write-private! (kubeconfig-path opts)
-                    (String. (.decode (java.util.Base64/getDecoder) ^String kc))))
   (let [urn (str (output-value result :registry-urn))
         user (str (output-value result :registry-username))
         pass (str (output-value result :registry-password))]
@@ -117,23 +98,63 @@
                            "REGISTRY_USER=" (sh-quote user) "\n"
                            "REGISTRY_PASS=" (sh-quote pass) "\n")))))
 
+(defn compute-request [opts]
+  {:legacy_state_keys [(str (:profile opts) "/agent-network-k8s-infrastructure.tfstate")]})
+
+(defn- compute-result [opts result]
+  (if-not (contains? #{"planned" "ready" "present" "destroyed"} (:status result))
+    (assoc opts :green/exit 1 :green/err (if (seq (:errors result)) (str/join "\n" (:errors result)) "managed compute lifecycle refused"))
+    (do
+      (when (and (contains? #{"ready" "present"} (:status result)) (:params result))
+        (doseq [[key file] [[:pod_cidr "cluster-subnet"] [:service_cidr "service-subnet"]]]
+          (when-let [value (get-in result [:params key])]
+            (write-private! (str (io/file (state-dir opts) file)) value))))
+      (cond-> (merge opts (:params result) {:green/exit 0 :colors-compute/managed (:params result)})
+        (:kubeconfig_path result) (assoc :colors-compute/kubeconfig-path (:kubeconfig_path result))))))
+
+(defn- compute-json [value indent]
+  (let [padding #(apply str (repeat % " "))]
+    (cond
+      (map? value) (if (empty? value) "{}"
+                      (str "{\n" (str/join ",\n" (for [[key item] (sort-by key value)]
+                                                       (str (padding (+ indent 2)) (json/generate-string key) ": " (compute-json item (+ indent 2)))))
+                           "\n" (padding indent) "}"))
+      (sequential? value) (if (empty? value) "[]"
+                              (str "[\n" (str/join ",\n" (map #(str (padding (+ indent 2)) (compute-json % (+ indent 2))) value)) "\n" (padding indent) "]"))
+      :else (json/generate-string value))))
+
 (defn infrastructure-step [opts]
-  (let [dir (tool-dir opts infrastructure-tool)
-        specs [(spec (template "infrastructure" "main.tf") (str dir "/main.tf")
-                     (infrastructure-data opts))]
-        version-err (when (and (= :create (:green/event opts))
-                               (not (:green/dry-run opts)))
-                      (vke-version-error opts))]
-    (if version-err
-      (assoc opts :green/exit 1 :green/err version-err)
-      (let [result (tofu/tofu-with-spec opts specs
-                                        {:dir dir :env (credential-env opts :provider-compute)})]
-        (cond
-          (wf/failed? result) result
-          (= :build (:green/event opts)) (merge result (fallback-params opts))
-          (= :delete (:green/event opts)) result
-          :else (do (persist-cluster-access! opts result)
-                    (merge result (fallback-params opts) (output-params result))))))))
+  (try
+    (let [planning (or (= :build (:green/event opts)) (:green/dry-run opts))
+          result (if planning (managed/plan-managed-kubernetes opts (compute-request opts))
+                     (managed/managed-kubernetes opts (compute-request opts)))]
+      (when planning
+        (doseq [[file document] (:documents result)]
+          (let [target (io/file (profile-dir opts) "compute" "managed-kubernetes" (name file))]
+            (io/make-parents target)
+            (spit target (str (compute-json document 0) "\n")))))
+      (compute-result opts result))
+    (catch Exception _ (assoc opts :green/exit 1 :green/err "managed compute lifecycle refused"))))
+
+(defn load-infrastructure-step [opts]
+  (if (:green/dry-run opts)
+    (infrastructure-step opts)
+    (let [result (managed/read-managed-kubernetes opts (compute-request opts))]
+      (if (= "destroyed" (:status result))
+        (assoc opts :green/exit 0 :agent-network-k8s/already-destroyed true)
+        (compute-result opts result)))))
+
+(defn registry-step [opts]
+  (let [dir (tool-dir opts registry-tool)
+        data (infrastructure-data opts)
+        specs [(spec (template "registry" "main.tf") (str dir "/main.tf") data)]
+        preflight-error nil]
+    (if preflight-error
+      (assoc opts :green/exit 1 :green/err preflight-error)
+      (let [result (tofu/tofu-with-spec opts specs {:dir dir :env (credential-env opts :provider-registry)})]
+        (when (and (not (wf/failed? result)) (= :create (:green/event opts)) (not (:green/dry-run opts)))
+          (persist-cluster-access! opts result))
+        result))))
 
 ;; -------------------------------------------------------------------- dns
 
@@ -214,6 +235,8 @@
   state files, so nothing in .colors/ or a golden ever holds one."
   [opts]
   (assoc opts
+         :compute-load-balancer-annotations (json/generate-string (into (sorted-map) (:load_balancer_annotations (managed/managed-application-settings opts (:colors-compute/managed opts)))))
+         :compute-pod-cidr (:pod_cidr (managed/managed-application-settings opts (:colors-compute/managed opts)))
          :allowed-model (validate/allowed-model opts)
          :denied-claimed-model (validate/denied-claimed-model opts)
          ;; The escaped base domain for Traefik's HostSNIRegexp: only
@@ -252,12 +275,13 @@
 
 (defn deploy-specs [opts]
   (let [dir (tool-dir opts deploy-tool) data (deploy-data opts)]
-    (conj
-     (mapv (fn [[subpath tdir]]
-             (spec (template tdir (.getName (io/file subpath))) (str dir "/" subpath) data))
-           deploy-files)
-     (raw-spec (str dir "/desired.json") (desired-json data))
-     (raw-spec (str dir "/inventory.json") (inventory data)))))
+    (into (mapv (fn [[subpath tdir]]
+                  (spec (template tdir (.getName (io/file subpath))) (str dir "/" subpath) data))
+                deploy-files)
+          (concat (map (fn [[name content]] (raw-spec (str dir "/" name) content))
+                       (managed/managed-application-artifacts opts ["managed-cleanup.sh"]))
+                  [(raw-spec (str dir "/desired.json") (desired-json data))
+                   (raw-spec (str dir "/inventory.json") (inventory data))]))))
 
 (defn kubeconfig-error
   "Why the profile's kubeconfig must not be used, or nil: a bearer credential
@@ -356,20 +380,13 @@
               :tunnel-only "confirmed"}))))
 
 (defn teardown-step
-  "Ordered in-cluster teardown before the infrastructure destroy: workloads,
-  PVCs (waiting for the CSI volumes to leave the account), then the LB
-  Service (waiting for the LB to leave the account). Skips cleanly when the
-  cluster is already gone or was never created."
+  "Withdraw application resources before destroying managed compute."
   [opts]
   (let [rendered (sc/scaffold (assoc opts :green/event :create) (deploy-specs opts))
         rendered (assoc rendered :green/event :delete)]
     (if (.exists (io/file (kubeconfig-path opts)))
-      (let [r (run-script rendered "teardown.sh")]
-        ;; A cluster that stopped answering must not block the destroy that
-        ;; removes it: teardown is best-effort, the tofu destroy is the
-        ;; authority.
-        (assoc r :green/exit 0))
-      (assoc rendered :green/exit 0))))
+      (run-script rendered "teardown.sh")
+      (assoc rendered :green/exit 1 :green/err "managed cluster access unavailable"))))
 
 (defn cleanup-step
   "Remove the local per-profile access material after the infrastructure is

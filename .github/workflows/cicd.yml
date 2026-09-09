@@ -22,6 +22,8 @@ jobs:
         run: cd red && bun install && bun test && bun run typecheck
       - name: Blue tests
         run: cd blue && uv sync && uv run pytest -q
+      - name: Teardown failure gates
+        run: python3 scripts/test-teardown.py
       - name: Byte parity
         run: ./scripts/parity.sh
       - name: Launcher resolution

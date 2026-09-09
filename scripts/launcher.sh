@@ -11,7 +11,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 cp "$launcher" "$tmp/green"; chmod +x "$tmp/green"
 sed "s#WORKDIR#.colors#" "$root/test/fixtures/colors.yml" > "$tmp/colors.yml"
 (cd "$tmp" && AGENT_NETWORK_K8S_LIB_ROOT="$root" ./green build >/dev/null)
-[[ -f "$tmp/.colors/agent-network-k8s-fixture/agent-network-k8s-infrastructure/main.tf" ]]
+[[ -f "$tmp/.colors/agent-network-k8s-fixture/compute/managed-kubernetes/managed-kubernetes.tf.json" ]]
 [[ -f "$tmp/.colors/agent-network-k8s-fixture/agent-network-k8s-deploy/converge.sh" ]]
 [[ -f "$tmp/.colors/agent-network-k8s-fixture/agent-network-k8s-deploy/manifests/networkpolicies.yaml" ]]
 # The launcher walks up for colors.yml, so any subdirectory works.
@@ -30,6 +30,8 @@ for colour in red blue; do
   rm -rf "$tmp/.colors"
   (cd "$tmp" && AGENT_NETWORK_K8S_LIB_ROOT="$root" "./$colour" build >/dev/null)
   [[ -f "$tmp/.colors/agent-network-k8s-fixture/agent-network-k8s-deploy/converge.sh" ]]
+  [[ -f "$tmp/.colors/agent-network-k8s-fixture/compute/managed-kubernetes/managed-kubernetes.tf.json" ]]
+  [[ -f "$tmp/.colors/agent-network-k8s-fixture/agent-network-k8s-registry/main.tf" ]]
   if grep -qE '"package-agent-network-k8s-red": null,|^# dependencies = \[\]$' "$payload"; then
     mkdir -p "$tmp/bare-$colour"; cp "$payload" "$tmp/bare-$colour/$colour"; chmod +x "$tmp/bare-$colour/$colour"
     out=$( (cd "$tmp/bare-$colour" && "./$colour" build 2>&1) || true )

@@ -1,3 +1,4 @@
+import {managed_application_artifacts,managed_application_settings,managed_errors,plan_managed_kubernetes,registry} from "colors-compute-red";
 // Credential-free desired-state validation for the VKE Agent Network demo,
 // the port of io.github.getcolors.agent-network-k8s.validate. Depends only on
 // the SDK: like `k8s`, this package carries its own provider registry rather
@@ -19,22 +20,14 @@ interface ProviderEntry {
 }
 
 export const providers: Record<string, Record<string, ProviderEntry>> = {
-  "provider-compute": {
+  "provider-registry": {
     vultr: { secrets: ["vultr-api-key"],
              tofuEnv: { "vultr-api-key": "VULTR_API_KEY" } },
   },
   "provider-dns": {
     cloudflare: { secrets: ["cloudflare-api-token"], tofuEnv: {} },
   },
-  "provider-backend": {
-    local: { secrets: [], tofuEnv: {} },
-    s3: { secrets: ["s3-access-key-id", "s3-secret-access-key"],
-          tofuEnv: { "s3-access-key-id": "AWS_ACCESS_KEY_ID",
-                     "s3-secret-access-key": "AWS_SECRET_ACCESS_KEY" } },
-    r2: { secrets: ["r2-access-key-id", "r2-secret-access-key"],
-          tofuEnv: { "r2-access-key-id": "AWS_ACCESS_KEY_ID",
-                     "r2-secret-access-key": "AWS_SECRET_ACCESS_KEY" } },
-  },
+  "provider-backend": Object.fromEntries(Object.entries(registry.backend).map(([name,entry])=>[name,{secrets:[...entry.secrets],tofuEnv:{...entry["tofu-env"]}}])),
 };
 
 // Every key desired state must carry. There is no `vultr-name`: the Compute
@@ -57,8 +50,8 @@ export const required = [
   "agent-network-claude-code-version", "agent-network-privoxy-version",
   "agent-network-gost-version", "agent-network-gost-sha256",
   "agent-network-lego-version",
-  "vultr-region", "vultr-vke-version", "vultr-node-plan", "vultr-node-count",
-  "vultr-registry-plan", "vultr-http-sources", "vke-pod-cidr",
+  "vultr-region",
+  "vultr-registry-plan",
 ];
 
 export const imageKeys = [
@@ -99,8 +92,8 @@ export function placeholder(v: unknown): boolean {
 // accept nothing else) — derives from this and never from the raw override
 // key or a second copy of the profile (§3).
 export function computeName(opts: Opts): string {
-  const override = opts["vultr-name"];
-  return placeholder(override) ? String(opts.profile) : String(override).trim();
+  try { return String(plan_managed_kubernetes(opts).params.name); }
+  catch { return String(opts.profile); }
 }
 
 export function registryName(opts: Opts): string {
@@ -197,19 +190,23 @@ function entry(opts: Opts, slot: string): ProviderEntry | undefined {
   return providers[slot]?.[String(opts[slot])];
 }
 
+function managedApplicationErrors(opts:Opts):string[] {
+ if(managed_errors(opts).length)return [];
+ try {const settings=managed_application_settings(opts);if(!settings.pod_cidr)return [':compute-pod-cidr is required'];managed_application_artifacts(opts,["managed-cleanup.sh"]);return [];}
+ catch(error){return [error instanceof Error?error.message:'invalid managed application settings'];}
+}
+
 export function stateErrors(opts: Opts): string[] {
   const errors: string[] = [];
   for (const k of required) {
     if (missing(opts[k])) errors.push(`:${k} is required`);
   }
-  if (opts["provider-compute"] !== "vultr") {
-    errors.push(":provider-compute must be vultr");
-  }
+  errors.push(...managed_errors(opts),...managedApplicationErrors(opts));
   if (opts["provider-dns"] !== "cloudflare") {
     errors.push(":provider-dns must be cloudflare");
   }
-  if (!["local", "s3", "r2"].includes(String(opts["provider-backend"]))) {
-    errors.push(":provider-backend must be local, s3, or r2");
+  if (!Object.hasOwn(registry.backend, String(opts["provider-backend"]))) {
+    errors.push(":provider-backend must be s3 or r2");
   }
   if (typeof opts["compute-prevent-destroy"] !== "boolean") {
     errors.push(":compute-prevent-destroy must be true or false");
@@ -257,19 +254,6 @@ export function stateErrors(opts: Opts): string[] {
         sha256Re.test(String(opts["agent-network-gost-sha256"])))) {
     errors.push(":agent-network-gost-sha256 must be the 64-hex sha256 of the release tarball");
   }
-  if (!(missing(opts["vultr-vke-version"]) ||
-        vkeVersionRe.test(String(opts["vultr-vke-version"])))) {
-    errors.push(":vultr-vke-version must look like v1.35.2+1");
-  }
-  if (!(missing(opts["vultr-node-count"]) ||
-        (Number.isInteger(opts["vultr-node-count"]) &&
-         (opts["vultr-node-count"] as number) >= 1 &&
-         (opts["vultr-node-count"] as number) <= 16))) {
-    errors.push(":vultr-node-count must be an integer between 1 and 16");
-  }
-  if (!(missing(opts["vke-pod-cidr"]) || cidrRe.test(String(opts["vke-pod-cidr"])))) {
-    errors.push(":vke-pod-cidr must be a CIDR block");
-  }
   if (!(missing(opts["agent-network-log-level"]) ||
         ["error", "warn", "info", "debug"].includes(String(opts["agent-network-log-level"])))) {
     errors.push(":agent-network-log-level must be error, warn, info, or debug");
@@ -309,18 +293,8 @@ export function stateErrors(opts: Opts): string[] {
       .some((v) => !missing(v))) {
     errors.push(...modelErrors(opts));
   }
-  const srcs = opts["vultr-http-sources"];
-  if (!missing(srcs) &&
-      (!Array.isArray(srcs) || srcs.length === 0 ||
-       srcs.some((s) => !cidrRe.test(String(s))))) {
-    errors.push(":vultr-http-sources must be a non-empty list of IPv4 CIDRs");
-  }
   // The override is validated against the provider's rules rather than
   // passed through unread (Compute Name Standard §2).
-  if (!(placeholder(opts["vultr-name"]) ||
-        vultrNameRe.test(String(opts["vultr-name"]).trim()))) {
-    errors.push(":vultr-name must be letters, digits, dot, dash or underscore");
-  }
   return errors;
 }
 
@@ -357,7 +331,7 @@ export function secretErrors(opts: Opts, event: string): string[] {
 
 export function tofuEnv(opts: Opts, slot: string): Record<string, string> {
   switch (slot) {
-    case "provider-compute": return { "vultr-api-key": "VULTR_API_KEY" };
+    case "provider-registry": return { "vultr-api-key": "VULTR_API_KEY" };
     case "provider-dns": return { "cloudflare-api-token": "CLOUDFLARE_API_TOKEN" };
     case "provider-backend": return entry(opts, "provider-backend")?.tofuEnv ?? {};
     default: return {};

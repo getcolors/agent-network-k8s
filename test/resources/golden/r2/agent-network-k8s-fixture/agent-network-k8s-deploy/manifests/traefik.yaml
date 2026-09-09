@@ -64,8 +64,7 @@ metadata:
   name: traefik
   namespace: agent-network-gateway
   labels: {app: traefik}
-  annotations:
-    service.beta.kubernetes.io/vultr-loadbalancer-protocol: "tcp"
+  annotations: {"service.beta.kubernetes.io/vultr-loadbalancer-protocol":"tcp"}
 spec:
   type: LoadBalancer
   selector: {app: traefik}

@@ -2,6 +2,7 @@
 port of io.github.getcolors.agent-network-k8s.tools."""
 
 from __future__ import annotations
+from colors_compute.managed import managed_application_artifacts, managed_application_settings
 
 import base64
 import json
@@ -21,8 +22,9 @@ from blue.scaffold import PRESERVE_JINJA_DELIMITERS, content_spec, scaffold
 from blue.workflow import StepError, failed
 
 from . import validate
+from . import compute
 
-infrastructure_tool = "agent-network-k8s-infrastructure"
+infrastructure_tool = "agent-network-k8s-registry"
 dns_tool = "agent-network-k8s-dns"
 deploy_tool = "agent-network-k8s-deploy"
 
@@ -160,10 +162,6 @@ def persist_cluster_access(opts: dict, result: dict) -> None:
     """Write the kubeconfig and the registry credentials where the converge
     scripts read them: private files under the profile directory, never in a
     rendered template, never in a golden."""
-    kc = str(output_value(result, "kubeconfig-b64") or "")
-    if kc:
-        write_private(kubeconfig_path(opts),
-                      base64.b64decode(kc).decode("utf-8"))
     urn = str(output_value(result, "registry-urn") or "")
     user = str(output_value(result, "registry-username") or "")
     password = str(output_value(result, "registry-password") or "")
@@ -174,17 +172,17 @@ def persist_cluster_access(opts: dict, result: dict) -> None:
                       f"REGISTRY_PASS={sh_quote(password)}\n")
 
 
-async def infrastructure_step(opts: dict) -> dict:
+async def registry_step(opts: dict) -> dict:
     dir = tool_dir(opts, infrastructure_tool)
-    specs = [spec(template("infrastructure", "main.tf"), f"{dir}/main.tf",
+    specs = [spec(template("registry", "main.tf"), f"{dir}/main.tf",
                   infrastructure_data(opts))]
     version_err = None
     if opts.get("blue/event") == "create" and not opts.get("blue/dry-run"):
-        version_err = await vke_version_error(opts)
+        version_err = None
     if version_err:
         return {**opts, "blue/exit": 1, "blue/err": version_err}
     result = await tofu.tofu_with_spec(opts, specs, dir=dir,
-                                       env=credential_env(opts, "provider-compute"))
+                                       env=credential_env(opts, "provider-registry"))
     if failed(result):
         return result
     if opts.get("blue/event") == "build":
@@ -336,7 +334,10 @@ def deploy_data(opts: dict) -> dict:
     operator secret: the Anthropic key, the Cloudflare token and the registry
     credentials reach the scripts through the process environment or private
     state files, so nothing in .colors/ or a golden ever holds one."""
+    settings = managed_application_settings(opts, opts.get('colors-compute/managed'))
     return {**opts,
+            "compute-load-balancer-annotations": json.dumps(settings['load_balancer_annotations'], sort_keys=True, separators=(',', ':')),
+            "compute-pod-cidr": settings.get('pod_cidr'),
             "allowed-model": validate.allowed_model(opts),
             "denied-claimed-model": validate.denied_claimed_model(opts),
             # The escaped base domain for Traefik's HostSNIRegexp: only
@@ -381,6 +382,7 @@ def deploy_specs(opts: dict) -> list[dict]:
     data = deploy_data(opts)
     return ([spec(template(tdir, Path(subpath).name), f"{dir}/{subpath}", data)
              for subpath, tdir in deploy_files]
+            + [raw_spec(f"{dir}/{name}", content) for name, content in managed_application_artifacts(opts, ['managed-cleanup.sh']).items()]
             + [raw_spec(f"{dir}/desired.json", desired_json(data)),
                raw_spec(f"{dir}/inventory.json", inventory(data))])
 
@@ -501,12 +503,9 @@ async def teardown_step(opts: dict) -> dict:
     rendered = {**scaffold({**opts, "blue/event": "create"}, deploy_specs(opts)),
                 "blue/event": "delete"}
     if not Path(kubeconfig_path(opts)).exists():
-        return {**rendered, "blue/exit": 0}
+        return {**rendered, "blue/exit": 1, "blue/err": "managed cluster access unavailable"}
     result = run_script(rendered, "teardown.sh")
-    # A cluster that stopped answering must not block the destroy that
-    # removes it: teardown is best-effort, the tofu destroy is the
-    # authority.
-    return {**result, "blue/exit": 0}
+    return result
 
 
 async def cleanup_step(opts: dict) -> dict:
@@ -569,3 +568,7 @@ def kubectl_main(state_file: str, args: list[str]) -> int:
         return 2
     result = run_inherit(["env", f"KUBECONFIG={kc}", "kubectl", *args])
     return result.exit
+
+
+infrastructure_step = compute.infrastructure_step
+load_managed_step = compute.load_step

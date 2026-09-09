@@ -1,0 +1,12 @@
+{
+  "terraform": {
+    "backend": {
+      "s3": {
+        "bucket": "tofu-state-example",
+        "key": "agent-network-k8s-fixture/compute/managed-kubernetes.tfstate",
+        "region": "us-east-1",
+        "use_lockfile": true
+      }
+    }
+  }
+}

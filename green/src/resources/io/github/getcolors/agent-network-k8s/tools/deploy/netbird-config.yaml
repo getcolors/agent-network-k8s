@@ -36,7 +36,7 @@ server:
     # Traefik forwards over the pod network; the ingress NetworkPolicy is
     # what narrows the actual sources to Traefik's pods.
     trustedHTTPProxies:
-      - "<{ vke-pod-cidr }>"
+      - "<{ compute-pod-cidr }>"
 
   store:
     engine: "sqlite"

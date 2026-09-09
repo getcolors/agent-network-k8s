@@ -1,0 +1,9 @@
+import {mkdirSync,writeFileSync} from 'node:fs';
+import {join} from 'node:path';
+import {managed_kubernetes,plan_managed_kubernetes,read_managed_kubernetes} from 'colors-compute-red';
+import type {Opts} from 'red/workflow';
+export const request=(opts:Opts)=>({legacy_state_keys:[String(opts.profile)+'/agent-network-k8s-infrastructure.tfstate']});
+function attach(opts:Opts,result:any):Opts{if(!['planned','ready','present','destroyed'].includes(result.status))return {...opts,'red/exit':1,'red/err':result.errors?.join('\n')||'managed compute lifecycle refused'};const params=result.params??{};return {...opts,'red/exit':0,'colors-compute/managed':params,...(params.name?{name:params.name,'cluster-id':params.cluster_id,endpoint:params.endpoint}:{})};}
+function sorted(value:any):any{return Array.isArray(value)?value.map(sorted):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(k=>[k,sorted(value[k])])):value;}
+export async function infrastructureStep(opts:Opts):Promise<Opts>{try{const planning=opts['red/event']==='build'||opts['red/dry-run'],result=planning?plan_managed_kubernetes(opts,request(opts)):await managed_kubernetes(opts,request(opts));if(planning){const dir=join(String(opts.workdir),String(opts.profile),'compute','managed-kubernetes');mkdirSync(dir,{recursive:true});for(const [name,value]of Object.entries(result.documents))writeFileSync(join(dir,name),JSON.stringify(sorted(value),null,2)+'\n');}return attach(opts,result);}catch{return {...opts,'red/exit':1,'red/err':'invalid managed compute requirements'};}}
+export async function loadManagedStep(opts:Opts):Promise<Opts>{if(opts['red/event']==='build'||opts['red/dry-run'])return opts;const result=await read_managed_kubernetes(opts,request(opts));return result.status==='destroyed'?{...opts,'red/exit':0,'managed/already-destroyed':true}:attach(opts,result);}

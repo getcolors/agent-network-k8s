@@ -1,10 +1,9 @@
 {:paths ["src/clj" "src/resources"]
  :deps {org.clojure/clojure       {:mvn/version "1.12.5"}
-        ;; The one pin: this package depends only on the SDK. Like `k8s`, its
-        ;; multi-resource Vultr templates and provider table are its own —
-        ;; there is no ONCE dependency to keep in step.
+        io.github.getcolors/colors-compute {:git/url "https://github.com/getcolors/colors-compute.git"
+                                             :git/sha "09d13289c5ea8efc3e082475bf9d958f30d9f2e0" :deps/root "green"}
         io.github.getcolors/green {:git/url "https://github.com/getcolors/green.git"
-                                   :git/sha "ceb4159a19ec281d60f10d11295c05c5de5f1c42"}}
+                                   :git/sha "3f33f5d4dcce1f8d97a11b6972e13eb3f0b37654"}}
  :aliases {:dev {:extra-paths ["test/clj" "test/resources"]}
            :test {:extra-paths ["test/clj" "test/resources"]
                   :extra-deps {io.github.cognitect-labs/test-runner

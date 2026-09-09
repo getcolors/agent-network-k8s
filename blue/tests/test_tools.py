@@ -49,7 +49,7 @@ def test_deploy_rendering(fixture):
         return Path(next(p for p in written if p.endswith(suffix))).read_text()
 
     # Every deploy file renders.
-    assert len(written) == len(tools.deploy_files) + 2
+    assert len(written) == len(tools.deploy_files) + 3
     # The host reaches the scripts and manifests.
     assert "agent-network-k8s.example.com" in slurp_target("bootstrap.sh")
     assert "NB_PROXY_DOMAIN" in slurp_target("manifests/proxy.yaml")
