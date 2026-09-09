@@ -72,9 +72,17 @@
    :agent-network-k8s/acceptance :agent-network-k8s/teardown
    :agent-network-k8s/cleanup])
 
+(defn next-steps [step successors opts]
+  (cond
+    (wf/failed? opts) []
+    (:agent-network-k8s/already-destroyed opts)
+    (if (and (= :delete (:green/event opts)) (= :agent-network-k8s/load-managed step))
+      [[:agent-network-k8s/cleanup opts]] [])
+    :else (mapv #(vector % opts) successors)))
+
 (def workflow
   (-> (wf/workflow {:start :agent-network-k8s/start :wire-fn wire-fn
-                     :next-fn (fn [_ next opts] (when-not (or (wf/failed? opts) (:agent-network-k8s/already-destroyed opts)) (map #(vector % opts) next)))})
+                     :next-fn next-steps})
       (wf/advice-add :agent-network-k8s/registry :before ::backend
                      (backend-advice tools/registry-tool))
       (wf/advice-add :agent-network-k8s/dns :before ::backend (backend-advice tools/dns-tool))

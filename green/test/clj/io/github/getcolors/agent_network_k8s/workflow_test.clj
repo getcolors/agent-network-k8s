@@ -1,5 +1,5 @@
 (ns io.github.getcolors.agent-network-k8s.workflow-test
-  (:require [clojure.string :as str]
+  (:require [io.github.getcolors.agent-network-k8s.tools :as tools] [green.workflow :as wf] [clojure.java.io :as io] [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [green.cli :as green-cli]
             [io.github.getcolors.agent-network-k8s.workflow :as workflow]))
@@ -58,3 +58,31 @@
                                    {})]
       (is (= 2 (:green/exit out)))
       (is (str/includes? (str (:green/err out)) "COLORS_PAR_COMPUTE_PREVENT_DESTROY")))))
+
+(deftest retired-resumes-only-idempotent-local-cleanup
+  (let [dir (.toFile (java.nio.file.Files/createTempDirectory "agent-network-k8s-retired-" (make-array java.nio.file.attribute.FileAttribute 0)))
+        opts {:profile "retired" :workdir (str dir) :green/event :delete}
+        paths [(io/file (tools/kubeconfig-path opts)) (io/file (tools/state-dir opts) "leftover") (io/file (tools/profile-dir opts) "proofs/leftover")]
+        keep (io/file dir "keep") seen (atom []) inspection-exit (atom 0)
+        native (wf/workflow {:start :agent-network-k8s/start :next-fn workflow/next-steps
+          :wire-fn (fn [step current]
+            (case step
+              :agent-network-k8s/start [(fn [o] (swap! seen conj step) (assoc o :green/exit 0)) :agent-network-k8s/load-managed]
+              :agent-network-k8s/load-managed [(fn [o] (swap! seen conj step) (assoc o :green/exit @inspection-exit :agent-network-k8s/already-destroyed true)) :forbidden/remote]
+              :agent-network-k8s/cleanup [(fn [o] (swap! seen conj step) ((first (workflow/wire-fn step o)) o))]
+              [(fn [_] (throw (ex-info "unexpected remote stage" {:step step})))]))})]
+    (try
+      (doseq [path paths] (io/make-parents path) (spit path "synthetic leftover"))
+      (spit keep "unrelated")
+      (dotimes [_ 2]
+        (reset! seen [])
+        (is (zero? (:green/exit (wf/run native opts))))
+        (is (= [:agent-network-k8s/start :agent-network-k8s/load-managed :agent-network-k8s/cleanup] @seen))
+        (is (every? #(not (.exists %)) paths))
+        (is (= "unrelated" (slurp keep))))
+      (reset! inspection-exit 1) (reset! seen [])
+      (is (= 1 (:green/exit (wf/run native opts))))
+      (is (= [:agent-network-k8s/start :agent-network-k8s/load-managed] @seen))
+      (is (= [] (workflow/next-steps :agent-network-k8s/load-managed [:forbidden/remote] (assoc opts :green/exit 1 :agent-network-k8s/already-destroyed true))))
+      (is (not (.exists (io/file dir ".ssh"))))
+      (finally (doseq [f (reverse (file-seq dir))] (io/delete-file f true))))))

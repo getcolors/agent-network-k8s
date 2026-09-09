@@ -84,8 +84,17 @@ side_effecting_steps = [
 ]
 
 
+def next_steps(step, successors, opts):
+    if failed(opts):
+        return []
+    if opts.get('managed/already-destroyed'):
+        # A retired journal proves compute cleanup, not completion of local files.
+        return [('agent-network-k8s/cleanup', opts)] if opts.get('blue/event') == 'delete' and step == 'agent-network-k8s/load-managed' else []
+    return [(successor, opts) for successor in successors or []]
+
+
 def create_workflow():
-    wf = workflow(start="agent-network-k8s/start", wire_fn=wire_fn, next_fn=lambda _step, successors, opts: [] if opts.get("managed/already-destroyed") or failed(opts) else [(step, opts) for step in (successors or [])])
+    wf = workflow(start="agent-network-k8s/start", wire_fn=wire_fn, next_fn=next_steps)
     wf = advice_add(wf, "agent-network-k8s/registry", "before",
                     "io.github.getcolors.agent-network-k8s.workflow/backend",
                     backend_advice(tools.infrastructure_tool))

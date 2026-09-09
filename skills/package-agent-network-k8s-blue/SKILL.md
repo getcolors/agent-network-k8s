@@ -69,3 +69,12 @@ the endpoint hostname. A deliberately fake `COLORS_PAR_ANTHROPIC_API_KEY` is
 supported; acceptance then requires the relayed upstream 401. A real key requires
 successful completions. Application secrets otherwise remain in cluster Secrets
 or NetBird's encrypted store, never in rendered templates or the agent pod.
+
+### Repeated deletion after compute retirement
+
+A repeated `delete` with validated retired compute ownership resumes only the
+local generated-file cleanup. It does not require removed SSH keys or contact
+the former hosts, DNS, registry, or other application cloud resources. Failed
+ownership inspection still stops deletion. Local cleanup preserves unrelated
+files and is safe to repeat.
+This includes remaining local kubeconfig and proofs.
