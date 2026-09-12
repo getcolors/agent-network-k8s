@@ -4,7 +4,7 @@
 # dependencies = ["package-agent-network-k8s-blue", "blue"]
 #
 # [tool.uv.sources]
-# package-agent-network-k8s-blue = { git = "https://github.com/getcolors/agent-network-k8s.git", rev = "c024bd4dc5bcd811e8e4e7b56562b06c4629c6d7", subdirectory = "blue" }
+# package-agent-network-k8s-blue = { git = "https://github.com/getcolors/agent-network-k8s.git", rev = "229b4504e107f5aeacf00a5960c5ba2caad455b8", subdirectory = "blue" }
 # blue = { git = "https://github.com/getcolors/blue.git", rev = "290f313ead5ca162875c33a049c880da017eae09" }
 # ///
 #
