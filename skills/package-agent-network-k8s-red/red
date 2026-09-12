@@ -42,6 +42,10 @@ import { homedir } from "node:os";
 // red/red.
 const PINS = {
   "package-agent-network-k8s-red": "github:getcolors/agent-network-k8s#c024bd4dc5bcd811e8e4e7b56562b06c4629c6d7",
+  // The Red SDK is a peer of colors-compute-red, not a dependency: a cold
+  // cache installs nothing for a peer, so the consumer pins it explicitly, at
+  // the commit red/package.json pins. scripts/launcher.sh checks they agree.
+  "red": "github:getcolors/red#db9bfe61282e2093f4098bf5a6ee0cd10added6e",
 };
 
 // PINS is the only source of versions, as green's inline SHA and blue's PEP
