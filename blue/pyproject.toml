@@ -5,7 +5,7 @@ description = "Blue/Python implementation of the Agent Network K8s package"
 requires-python = ">=3.11"
 dependencies = [
     "blue @ git+https://github.com/getcolors/blue.git@290f313ead5ca162875c33a049c880da017eae09",
-    "colors-compute-blue @ git+https://github.com/getcolors/colors-compute.git@09d13289c5ea8efc3e082475bf9d958f30d9f2e0#subdirectory=blue",
+    "colors-compute-blue @ git+https://github.com/getcolors/colors-compute.git@ae28ea74962bb1897fa6365c143c1d43ac1fe095#subdirectory=blue",
 ]
 
 [dependency-groups]
